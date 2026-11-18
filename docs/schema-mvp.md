@@ -2,7 +2,7 @@
 
 - 작성일: 2026-11-18
 - SQL: [schema-mvp.sql](schema-mvp.sql)(테이블·FK·인덱스·한글 논리명), [schema-mvp-security.sql](schema-mvp-security.sql)(역할·RLS·권한)
-- 바탕: 23개 테이블 안(v2, 지금은 레포에 없음)에서 핵심 흐름만 남겨 18개로 줄였다. 녹음·전사 → 노트 → Q&A로 노트 보완 → 이해 상태에 맞춘 복습.
+- 바탕: 23개 테이블 안(v2, 지금은 레포에 없음)에서 핵심 흐름만 남겨 18개로 줄였다. 녹음·전사 → 노트 → Q&A로 노트 보완 → 이해 상태에 맞춘 복습. 그 뒤 `outbox`와 `note_updates`를 더해 20개다(2026-11-19).
 - 논리명은 `COMMENT ON TABLE/COLUMN`에 있다. ERD 도구의 논리 뷰가 이 값을 쓴다.
 - ERDCloud: [schema-mvp.erdcloud.json](schema-mvp.erdcloud.json)을 스냅샷 가져오기로 넣는다. 논리명은 한글, 물리명은 SQL 이름이다.
 
@@ -34,6 +34,7 @@ docker stop notree-mvp
 | 노트 | 노트 | `notes` | 강의 노트(강의당 1개)·과목 노트(과목당 1개), 생성 상태 |
 | | 노트 블록 | `note_blocks` | 블록의 현재 내용, 순서와 깊이, 근거, 판 번호. ID는 편집기가 만드는 UUIDv7(ADR-0013) |
 | | 블록 이력 | `block_revisions` | 블록이 바뀔 때마다 한 행. 이력 조회·되돌리기 |
+| | 과목 노트 업데이트 | `note_updates` | 업데이트 한 번의 상태(대기·실행·일시정지·사용자 확인 대기·완료). `id`가 체크포인트 thread |
 | 질의응답 | 대화 | `conversations` | 과목별 대화 |
 | | 대화 메시지 | `messages` | 질문 원문, 완료된 답변, Q&A 단계별 결과(답변·노트 반영·학습 상태 갱신) |
 | | 노트 변경안 | `note_changes` | Q&A가 제안한 노트 변경과 처리 상태(확인 필요·반영·거절·되돌림·보류) |
@@ -60,12 +61,32 @@ docker stop notree-mvp
 
 ## LangGraph
 
-LangGraph 체크포인터를 쓰지 않으므로 LangGraph 자체 테이블(`checkpoints` 등)은 만들지 않는다(ADR-0009).
+Q&A 그래프는 체크포인터 없이 메모리에서만 돌고(SER-001 4), 과목 노트 업데이트 그래프는 Postgres 체크포인터로 재개하며 의미 충돌은 `interrupt`로 사용자 확인을 받는다(ADR-0023). 체크포인트 테이블은 `langgraph` 스키마에 worker가 `setup()`으로 만든다.
 
-- Q&A 그래프는 메모리에서만 돌고, 결과만 `messages`·`note_changes`·`observations`에 저장한다.
+- Q&A 그래프는 결과만 `messages`·`note_changes`·`observations`에 저장한다. 대화는 `messages`에서 최근 대화를 읽어 기억한다.
 - Q&A는 ADR-0022대로 `qa_answer` 하나가 답변 → 반영 → 관찰 단계를 하고, 완료 표시는 `messages.answer_status`·`reflect_status`·`learner_status`다.
-- 과목 노트 업데이트는 모든 단계의 결과를 마지막에 한 트랜잭션으로 반영한다. 중간에 실패하면 처음부터 다시 돌린다. AI 호출은 반복되지만 같은 변경이 두 번 반영되지는 않는다.
-- 실패한 단계부터 재개해야 하면(SFR-043 2), ADR-0009대로 `jobs.completed_stages text[]`를 추가하고 단계마다 결과와 함께 커밋한다.
+- shortcut: 대화 요약(`conversations.summary`)이 없어 최근 대화 3k보다 오래된 내용은 기억하지 못한다, 긴 대화에서 문제가 되면 목표 설계대로 요약을 넣는다.
+
+### 과목 노트 업데이트 흐름
+
+```mermaid
+flowchart TB
+  IN[입력 · 코드<br/>과목 노트 + 아직 반영하지 않은 강의 최종 노트] --> PLAN{배치 · LLM<br/>강의 블록 → 기존 단원 또는 새 단원}
+  PLAN -- Send · 단원마다 --> MERGE[단원별 병합 · LLM<br/>병렬 실행]
+  MERGE --> CLS{충돌 분류<br/>자동 반영 · 사용자 확인}
+  CLS -- 충돌 없음 --> APPLY[(반영 · 트랜잭션<br/>노트 변경 + status completed)]
+  CLS -- 의미 충돌 있음 --> ASK[[interrupt<br/>충돌을 note_changes pending으로 저장하고 멈춤]]
+  ASK -. 사용자가 모두 결정 → 재개 작업 .-> APPLY
+  APPLY --> END([끝 · thread 삭제])
+```
+
+- **단원**: 과목 노트의 최상위 제목 블록과 다음 최상위 제목 앞까지의 블록. 그 제목 블록 ID로 식별한다. 첫 최상위 제목 앞의 블록은 '머리말' 단원 하나다. 새 단원은 배치 단계에서 서버가 UUIDv7을 미리 발급한다.
+- **재개**: 체크포인터가 노드마다 상태(배치 계획, 끝난 단원의 병합 결과)를 저장한다. 워커가 죽으면 끝난 노드와 끝난 단원은 다시 하지 않는다. 단원 병합 동시 실행은 4개까지다(초기값).
+- **이중 반영**: 부작용은 반영 노드에만 있다. 노트 변경과 `note_updates.status = 'completed'`를 한 트랜잭션으로 커밋하고, 이미 `completed`면 건너뛴다.
+- **사용자 확인 대기**: `status = 'awaiting_user'`, 작업은 끝나고 편집 잠금은 푼다(SFR-008 5). 화면은 `note_changes(status='pending', note_update_id)`를 읽는다. 사용자가 모두 결정하면 api가 같은 `note_updates.id`로 `course_update` 작업을 넣고, worker가 `Command(resume=...)`로 이어 간다. 그사이 노트가 바뀌었으면 충돌 분류부터 다시 한다(ADR-0006).
+- **기다리는 동안**: Q&A 반영은 '과목 노트 업데이트 중'으로 대기한다(과목 노트당 20개, SFR-020 5). 새 강의는 `queued` 행 하나에 합쳐 진행 중인 업데이트가 끝난 뒤 돈다.
+- **일시정지·취소** (SFR-008 6): 일시정지는 노드 사이에서 `paused`를 확인해 멈추고 같은 thread로 이어 간다. 취소는 `cancelled`로 바꾸고 thread를 지운다. 늦게 끝난 결과는 반영 노드가 상태를 보고 버린다.
+- shortcut: 연속 10분 실행 뒤 자동 일시정지는 없다, 업데이트가 길어지면 넣는다.
 
 ### MVP Q&A 흐름
 

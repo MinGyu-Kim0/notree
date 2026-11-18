@@ -422,7 +422,6 @@ CREATE TABLE note_updates (               -- 과목 노트 업데이트 (SFR-008
   note_generation int NOT NULL,
   run_seconds     int NOT NULL DEFAULT 0, -- 연속 실행 10분이면 paused
   result_version_id bigint,
-  completed_stages text[] NOT NULL DEFAULT '{}',  -- 재개 기준. 단계 결과와 같은 트랜잭션에서 추가 (9장 D9)
   failed_stage    text,
   error_code      text,
   started_at      timestamptz,
@@ -435,7 +434,9 @@ CREATE UNIQUE INDEX ON note_updates (note_id) WHERE status = 'running';
 CREATE UNIQUE INDEX ON note_updates (note_id) WHERE status IN ('paused','failed');
 CREATE UNIQUE INDEX ON note_updates (note_id) WHERE status = 'queued';
 -- 대기 요청이 이미 있으면 새 요청은 그 행에 합친다. 반영할 강의 버전은 시작할 때 정한다.
--- 단원별 병합은 단원마다 'merge:<단원>'을 completed_stages에 넣어, 인계 뒤 남은 단원만 다시 한다.
+-- id가 LangGraph 체크포인트의 thread_id다. 재개는 체크포인터가 하고, 의미 충돌은 interrupt로 awaiting_user가 된다 (9장 D9, ADR-0023).
+-- 이중 반영은 반영 노드가 노트 변경과 status = 'completed'를 한 트랜잭션으로 커밋하고, 이미 completed면 건너뛰어 막는다.
+-- 단원 = 최상위 제목 블록과 다음 최상위 제목 앞까지의 블록. 그 제목 블록 ID로 식별하고, 배치 계획은 체크포인트에 남는다.
 
 CREATE TABLE note_changes (               -- 변경안. notebook 소유. tutor는 제출만 한다 (architecture 3장)
   -- 공통
@@ -884,7 +885,7 @@ CREATE INDEX ON cost_reservations (user_id) WHERE status = 'held';
 | D6 | 실시간 요약 (**확정**) | DB에 두지 않는다. Redis에 강의별로 두고 최종 노트가 발행되면 지운다(SFR-006 6). 강의당 실행 1·대기 1 제한은 `jobs`로 건다 | 별도 `notes` 행. 영구 저장할 이유가 없다 |
 | D7 | 블록 내용 형식 (**확정**, [ADR-0020](adr/0020-tiptap-flat-blocks-with-depth.md)) | `jsonb`. 자식을 뺀 Tiptap 노드 JSON 하나. 블록 트리는 `note_versions.depths`로 | Markdown `text`. 편집기와 오갈 때마다 변환해야 한다 |
 | D8 | 전사 구간 단위 (**확정**, [ADR-0014](adr/0014-utterance-transcript-segments.md)) | 닫힌 발화 하나 = 행 하나. 발화 종료 신호, 15초 상한, 일시정지·종료·STT 세션 교체 때 닫고 그 뒤로 바꾸지 않는다(요구사항 v0.4.3 SFR-004 3)) | 1초 묶음마다 한 행. 문장이 아무 데서나 잘려 정정·수정 제안이 여러 행에 걸친다 |
-| D9 | LangGraph 체크포인트 (**2026-11-18 변경**, [ADR-0009](adr/0009-langgraph-graphs-with-openai-sdk.md)) | 체크포인터를 쓰지 않는다. 단계 결과와 `note_updates.completed_stages` 추가를 한 트랜잭션으로 커밋하고(`jobs.attempt_no` 확인), 재개는 남은 단계부터 | 공식 Postgres 저장소. 도메인 커밋과 트랜잭션이 달라 단계 완료 기록이 어차피 따로 필요하고, DDL 이식·RLS·삭제 트리거·늦은 워커 차단 래퍼가 든다 |
+| D9 | LangGraph 체크포인트 (**2026-11-19 변경**, [ADR-0023](adr/0023-course-update-checkpointer-and-interrupt.md)) | Q&A는 체크포인터 없이 메모리에서만(SER-001 4). 과목 노트 업데이트는 Postgres 체크포인터(`langgraph` 스키마, `thread_id = note_updates.id`)로 재개하고, 의미 충돌은 `interrupt`로 사용자 확인. 이중 반영은 반영 노드가 `status = 'completed'`와 함께 커밋해 막는다 | 체크포인터 없이 `note_updates.completed_stages`로 재개(2026-11-18안). 사용자 확인을 그래프 밖에서 이어 붙여야 하고, 단원 경계와 단원별 완료 기록을 따로 저장해야 한다 |
 | D10 | 작업 실행 기록 (**확정**, [ADR-0017](adr/0017-taskiq-delivery-sdk-retries.md)~[0019](adr/0019-outbox-and-ack-after-commit.md)) | `jobs.attempt_no`(늦은 실행 차단), Redis lease(실행 중 여부), `outbox`(전달·중요 이벤트), `jobs (user_id, idempotency_key)` | lease를 DB에(heartbeat가 DB 쓰기), `jobs`에 전송 시각 열(작업 전달과 이벤트가 다른 경로) |
 | D11 | Q&A 후속 처리 (**2026-11-18**, [ADR-0022](adr/0022-qa-followup-stages-in-one-job.md)) | `qa_answer` 작업 하나가 답변 → 반영 → 관찰 단계를 순서대로 한다. 완료 표시는 `messages.answer_status`·`reflect_status`·`learner_status`. 계정 한도는 사용자가 시작한 작업에만 | 반영·관찰을 별도 작업으로. 답변 뒤 Q&A 한도를 바로 반납하지만 실행 허가·대기열·자리 이어받기를 새로 만들어야 한다 |
 
@@ -903,7 +904,7 @@ CREATE INDEX ON cost_reservations (user_id) WHERE status = 'held';
 | SFR-004 | `transcript_segments` (`close_reason`, `closed_at`·`committed_at`, `maybe_duplicate`), `recording_gaps(kind='missing')` |
 | SFR-006 | DB 없음(Redis). 작업 제한만 `one_live_summary_*` |
 | SFR-007·015 | `notes`, `note_versions` |
-| SFR-008 | `note_updates` (`completed_stages`), `notes.locked_until`, `note_changes(origin='course_update')` |
+| SFR-008 | `note_updates` (`id` = 체크포인트 thread), `notes.locked_until`, `note_changes(origin='course_update')`, `langgraph` 체크포인트 |
 | SFR-009·010·022 | `block_revisions.author`·`reason`, `note_versions` (`depths`), `citations`, `note_changes(origin='lecture_regen')` |
 | SFR-013·048, DAR-006 | `deletion_batches`, `deletion_batch_id`, `hide_trash` 정책 |
 | SFR-016·021 | `messages` (`answer_status`·`reflect_status`·`learner_status` 단계 완료 표시), `citations(message_id)` |
