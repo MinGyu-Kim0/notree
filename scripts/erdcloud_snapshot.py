@@ -45,7 +45,7 @@ DIAGRAM_ID = "YpQYSpgDtsy95cT3D"
 
 # 화면 배치: 열마다 영역 하나, 위에서 아래로. 없는 테이블은 마지막 열 아래에 붙는다.
 COLUMNS = [
-    (["users", "sessions", "jobs", "usage_ledger"], "rgba(10, 10, 10, 0.5)"),
+    (["users", "sessions", "jobs", "outbox", "usage_ledger"], "rgba(10, 10, 10, 0.5)"),
     (["courses", "lectures", "recordings", "segments"], "rgba(10, 10, 10, 0.5)"),
     (["notes", "note_blocks", "block_revisions"], "rgba(178, 27, 0, 0.5)"),
     (["conversations", "messages", "note_changes"], "rgba(178, 27, 0, 0.5)"),

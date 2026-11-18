@@ -81,7 +81,7 @@ async def test_run_job() -> None:
     async with user_tx(user_id) as db:
         jobs = [
             Job(user_id=user_id, kind=kind, target_id=7)
-            for kind in ("purge", "grade", "observe")
+            for kind in ("purge", "grade", "generate_card")
         ]
         db.add_all(jobs)  # enqueue를 쓰지 않는다. 떠 있는 워커가 먼저 가져가면 안 된다
     for job in jobs:

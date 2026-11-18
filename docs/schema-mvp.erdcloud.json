@@ -1192,9 +1192,9 @@
           "relType": null
         },
         {
-          "_id": "TQdg6zTxD24TRoi6i",
+          "_id": "t8pQYZFNYg5oyywb5",
           "name": "답변 상태",
-          "pName": "status",
+          "pName": "answer_status",
           "domain": "",
           "type": "text",
           "defaultValue": "",
@@ -1231,6 +1231,58 @@
           "relType": null
         },
         {
+          "_id": "SzgJNve27D6KGihut",
+          "name": "반영 판단 이유",
+          "pName": "reflect_reason",
+          "domain": "",
+          "type": "text",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "yS7vsWZ5MEaFGiwfQ",
+          "name": "학습 상태 갱신 결과",
+          "pName": "learner_status",
+          "domain": "",
+          "type": "text",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "iNfLp7aELbZA3xrKi",
+          "name": "답변 종류",
+          "pName": "answer_kind",
+          "domain": "",
+          "type": "text",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "bw7FvR3TqizRhdFqq",
+          "name": "잘림 여부",
+          "pName": "truncated",
+          "domain": "",
+          "type": "boolean",
+          "defaultValue": "false",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
           "_id": "syYH4WuQ4xFkb3Ch9",
           "name": "생성 시각",
           "pName": "created_at",
@@ -1253,7 +1305,7 @@
       "name": "노트 변경안",
       "position": {
         "x": 2110,
-        "y": 920
+        "y": 1048
       },
       "keys": {
         "pks": [
@@ -2413,13 +2465,96 @@
       "color": "rgba(10, 10, 10, 0.5)"
     },
     {
+      "_id": "qnSWqykKXapctFvs3",
+      "_diagramId": "YpQYSpgDtsy95cT3D",
+      "pName": "outbox",
+      "name": "보낼 작업",
+      "position": {
+        "x": 100,
+        "y": 1474
+      },
+      "keys": {
+        "pks": [
+          {
+            "_id": "xhpEPeTMDtibK3hou",
+            "name": "전달 ID",
+            "pName": "id",
+            "domain": "",
+            "type": "bigint",
+            "defaultValue": "",
+            "isAllowNull": false,
+            "comment": "",
+            "relEntity": null,
+            "relFieldId": null,
+            "relType": null
+          }
+        ],
+        "fks": []
+      },
+      "fields": [
+        {
+          "_id": "sBFDyrvFYnQCfnTEz",
+          "name": "사용자 ID",
+          "pName": "user_id",
+          "domain": "",
+          "type": "bigint",
+          "defaultValue": "",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "tSMpGz7STuMWreBmE",
+          "name": "작업 ID",
+          "pName": "job_id",
+          "domain": "",
+          "type": "bigint",
+          "defaultValue": "",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": "2CJS2ZoosAG7A6YhN",
+          "relFieldId": "XRk8WsJvmjBnH77Xx",
+          "relType": "ZERO_OR_ONE_OR_MANY"
+        },
+        {
+          "_id": "YoNXFcwNkGSSYNmr8",
+          "name": "전송 시각",
+          "pName": "sent_at",
+          "domain": "",
+          "type": "timestamptz",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "nYZiyA3iSdfFA5Hri",
+          "name": "생성 시각",
+          "pName": "created_at",
+          "domain": "",
+          "type": "timestamptz",
+          "defaultValue": "now()",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        }
+      ],
+      "color": "rgba(10, 10, 10, 0.5)"
+    },
+    {
       "_id": "M83gTGx9WYRcW8w4P",
       "_diagramId": "YpQYSpgDtsy95cT3D",
       "pName": "usage_ledger",
       "name": "비용 장부",
       "position": {
         "x": 100,
-        "y": 1474
+        "y": 1804
       },
       "keys": {
         "pks": [
@@ -2552,7 +2687,7 @@
   "shapeData": [],
   "connectorData": [],
   "domainData": [],
-  "createdAt": "2026-11-18T04:15:08.197Z",
+  "createdAt": "2026-11-18T22:50:14.861Z",
   "creatorName": "",
   "creatorThumb": ""
 }

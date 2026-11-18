@@ -134,15 +134,25 @@ CREATE TABLE messages (
   conversation_id bigint NOT NULL REFERENCES conversations ON DELETE CASCADE,
   role            text NOT NULL CHECK (role IN ('user', 'assistant')),
   content         text,
-  status          text CHECK (status IN ('generating', 'completed', 'interrupted', 'failed')),
+  answer_status   text CHECK (answer_status IN ('generating', 'completed', 'interrupted', 'failed',
+                                                'evidence_changed')),   -- evidence_changed: 저장 직전 근거가 바뀜, 질문 보존 (SFR-016 8, ADR-0006)
   sources         jsonb NOT NULL DEFAULT '[]',
   reflect_status  text CHECK (reflect_status IN ('not_needed', 'applied', 'pending', 'held', 'failed')),   -- 노트 반영 결과 (SFR-021)
+  reflect_reason  text CHECK (char_length(reflect_reason) <= 300),   -- 반영 판단 이유, 2문장 이내 (SFR-017 3)
+  learner_status  text CHECK (learner_status IN ('not_needed', 'applied', 'pending', 'held', 'failed')),   -- 학습 상태 갱신 결과 = 관찰 추가와 이해 상태 재계산 (SFR-021). held를 언제 쓰는지는 미정(learner 담당)
+  answer_kind     text CHECK (answer_kind IN ('answer', 'clarification', 'conflict')),   -- 답변 종류: 답변 · 확인 질문 · 상충 안내
+  truncated       boolean NOT NULL DEFAULT false,   -- 맥락 자료나 출력을 잘랐음. 화면에 표시한다 (PER-004 4)
   created_at      timestamptz NOT NULL DEFAULT now(),
-  CHECK (role = 'assistant' OR (status IS NULL AND content IS NOT NULL)),
-  CHECK (role = 'user' OR status IS NOT NULL),
-  CHECK (role = 'user' OR status = 'completed' OR content IS NULL)   -- 미완성 답변 본문은 저장하지 않는다 (SFR-021 3)
+  CHECK (role = 'assistant' OR (answer_status IS NULL AND content IS NOT NULL)),
+  CHECK (role = 'user' OR answer_status IS NOT NULL),
+  CHECK (role = 'user' OR answer_status = 'completed' OR content IS NULL),   -- 미완성 답변 본문은 저장하지 않는다 (SFR-021 3)
+  CHECK (role = 'assistant' OR answer_kind IS NULL),
+  CHECK (answer_status IS DISTINCT FROM 'completed' OR answer_kind IS NOT NULL)
 );
 CREATE INDEX messages_page ON messages (conversation_id, id);
+-- answer_status·reflect_status·learner_status는 qa_answer 작업의 단계 완료 표시다 (ADR-0022). 각 단계 결과와 같은 트랜잭션에서 쓰고,
+-- 재시도 때 이 값을 보고 남은 단계만 한다. 반영·관찰 단계는 answer_status = 'completed'이고 answer_kind = 'answer'일 때만 돈다.
+-- 확인 질문·상충 안내는 답변 저장 트랜잭션에서 reflect_status·learner_status를 'not_needed'로 쓴다.
 
 CREATE TABLE note_changes (
   id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -259,8 +269,14 @@ CREATE INDEX observations_message ON observations (message_id) WHERE message_id 
 CREATE TABLE jobs (
   id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id     bigint NOT NULL REFERENCES users ON DELETE CASCADE,
-  kind        text NOT NULL CHECK (kind IN ('final_note', 'course_update', 'qa_answer', 'note_reflect',
-                                            'observe', 'generate_card', 'grade', 'purge')),
+  -- final_note: 강의 최종 노트 생성 (SFR-007)
+  -- course_update: 과목 노트 업데이트 (SFR-008)
+  -- qa_answer: Q&A 답변 → 노트 반영 → 관찰 단계 (ADR-0022)
+  -- generate_card: 복습 카드 출제 (SFR-034)
+  -- grade: 답안 채점과 관찰 추가 (SFR-035)
+  -- purge: 보관 기간이 지난 데이터 영구 삭제
+  kind        text NOT NULL CHECK (kind IN ('final_note', 'course_update', 'qa_answer',
+                                            'generate_card', 'grade', 'purge')),
   status      text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
   target_id   bigint,                           -- kind에 따라 강의·노트·메시지·답안 ID
   payload     jsonb NOT NULL DEFAULT '{}',      -- ID만. 질문 원문 금지 (SER-001)
@@ -274,6 +290,18 @@ CREATE TABLE jobs (
 CREATE INDEX jobs_user ON jobs (user_id, created_at);
 -- shortcut: 여러 사용자를 훑는 회수 조회는 notree_app으로 못 한다(RLS), 회수 루프를 만들 때 SECURITY DEFINER 함수를 추가한다 (ADR-0010)
 CREATE INDEX jobs_ready ON jobs (run_after) WHERE status = 'queued';   -- FOR UPDATE SKIP LOCKED
+
+-- 작업 전달을 jobs와 같은 트랜잭션에 적어 둔다 (ADR-0019). 커밋 직후 보내고 sent_at을 채운다.
+-- 회수 루프가 sent_at IS NULL인 오래된 행을 다시 보낸다. 받는 쪽은 jobs.status = 'queued'로 중복을 거른다.
+-- shortcut: 작업 전달만 싣는다, 완료 이벤트를 잃는 것이 문제가 되면 kind 열을 더해 같은 표에 얹는다
+CREATE TABLE outbox (
+  id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id    bigint NOT NULL,
+  job_id     bigint NOT NULL REFERENCES jobs ON DELETE CASCADE,
+  sent_at    timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX outbox_unsent ON outbox (created_at) WHERE sent_at IS NULL;   -- 회수 루프
 
 CREATE TABLE usage_ledger (                      -- AI 비용 예약과 정산 (PER-003)
   id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -389,9 +417,13 @@ COMMENT ON COLUMN messages.user_id IS '사용자 ID';
 COMMENT ON COLUMN messages.conversation_id IS '대화 ID';
 COMMENT ON COLUMN messages.role IS '발화자';
 COMMENT ON COLUMN messages.content IS '본문';
-COMMENT ON COLUMN messages.status IS '답변 상태';
+COMMENT ON COLUMN messages.answer_status IS '답변 상태';
 COMMENT ON COLUMN messages.sources IS '근거';
 COMMENT ON COLUMN messages.reflect_status IS '노트 반영 결과';
+COMMENT ON COLUMN messages.reflect_reason IS '반영 판단 이유';
+COMMENT ON COLUMN messages.learner_status IS '학습 상태 갱신 결과';
+COMMENT ON COLUMN messages.answer_kind IS '답변 종류';
+COMMENT ON COLUMN messages.truncated IS '잘림 여부';
 COMMENT ON COLUMN messages.created_at IS '생성 시각';
 
 COMMENT ON TABLE note_changes IS '노트 변경안';
@@ -487,6 +519,13 @@ COMMENT ON COLUMN jobs.run_after IS '실행 가능 시각';
 COMMENT ON COLUMN jobs.started_at IS '시작 시각';
 COMMENT ON COLUMN jobs.finished_at IS '종료 시각';
 COMMENT ON COLUMN jobs.created_at IS '생성 시각';
+
+COMMENT ON TABLE outbox IS '보낼 작업';
+COMMENT ON COLUMN outbox.id IS '전달 ID';
+COMMENT ON COLUMN outbox.user_id IS '사용자 ID';
+COMMENT ON COLUMN outbox.job_id IS '작업 ID';
+COMMENT ON COLUMN outbox.sent_at IS '전송 시각';
+COMMENT ON COLUMN outbox.created_at IS '생성 시각';
 
 COMMENT ON TABLE usage_ledger IS '비용 장부';
 COMMENT ON COLUMN usage_ledger.id IS '장부 ID';
