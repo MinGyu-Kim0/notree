@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Notree
 
 강의를 녹음·전사해 노트로 만들고, 질의응답으로 노트를 보완하며, 이해 상태에 맞춰 복습을 내는 개인 학습 서비스. 문서 지도와 팀 공통 규칙은 [AGENTS.md](AGENTS.md)에 있다.
@@ -62,3 +63,6 @@ docker compose -f deploy/compose.yaml exec api pytest
 ## 아직 없는 것
 
 프론트엔드, 구글 로그인, 녹음 WebSocket(`realtime`), `cron`, SSE, 작업 재시도와 회수. 코드에서 `shortcut:` 주석을 찾으면 알고 건너뛴 곳이 나온다.
+=======
+# notree
+>>>>>>> 8cabd471467a6f427e67a5a1734fc19f3355e89e
