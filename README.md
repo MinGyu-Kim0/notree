@@ -62,4 +62,4 @@ docker compose -f deploy/compose.yaml exec api pytest
 ## 아직 없는 것
 
 프론트엔드, 구글 로그인, 녹음 WebSocket(`realtime`), `cron`, SSE, 작업 재시도와 회수. 코드에서 `shortcut:` 주석을 찾으면 알고 건너뛴 곳이 나온다.
-=======
+
