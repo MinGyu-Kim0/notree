@@ -772,9 +772,13 @@ CREATE INDEX ON deletion_batches (purge_at) WHERE purged_at IS NULL AND restored
 
 CREATE TABLE jobs (                       -- 작업 상태의 원본 (ADR-0001, ADR-0017~0019)
   -- 공통
+  -- live_summary: 실시간 요약 (SFR-006) · final_note: 강의 최종 노트 (SFR-007) · course_update: 과목 노트 업데이트 (SFR-008)
+  -- qa_answer: Q&A 답변 → 노트 반영 → 관찰 단계 (D11) · generate_item: 복습 문항 출제 (SFR-034) · grade: 채점과 관찰 추가 (SFR-035)
+  -- search_refresh: 검색 자료 갱신 · retranscribe: 지난 구간 재전사 (SFR-046 5) · email_digest: 복습 알림 메일 (SFR-038)
+  -- purge: 보관 기간이 지난 데이터 영구 삭제
   kind              text NOT NULL CHECK (kind IN
-                      ('live_summary','final_note','course_update','qa_answer','note_reflect',
-                       'extract_observations','generate_item','grade','search_refresh',
+                      ('live_summary','final_note','course_update','qa_answer',
+                       'generate_item','grade','search_refresh',
                        'retranscribe','email_digest','purge')),
   status            text NOT NULL DEFAULT 'queued' CHECK (status IN
                       ('queued','running','succeeded','failed','cancelled','discarded')),

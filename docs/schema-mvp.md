@@ -35,7 +35,7 @@ docker stop notree-mvp
 | | 노트 블록 | `note_blocks` | 블록의 현재 내용, 순서와 깊이, 근거, 판 번호. ID는 편집기가 만드는 UUIDv7(ADR-0013) |
 | | 블록 이력 | `block_revisions` | 블록이 바뀔 때마다 한 행. 이력 조회·되돌리기 |
 | 질의응답 | 대화 | `conversations` | 과목별 대화 |
-| | 대화 메시지 | `messages` | 질문 원문, 완료된 답변, 노트 반영 결과 |
+| | 대화 메시지 | `messages` | 질문 원문, 완료된 답변, Q&A 단계별 결과(답변·노트 반영·학습 상태 갱신) |
 | | 노트 변경안 | `note_changes` | Q&A가 제안한 노트 변경과 처리 상태(확인 필요·반영·거절·되돌림·보류) |
 | 학습자 | 개념 | `concepts` | 과목별 개념과 이해 상태 |
 | | 관찰 | `observations` | 이해 상태의 근거. 복습 답안 또는 Q&A에서 나온다 |
@@ -53,13 +53,14 @@ docker stop notree-mvp
 | `note_versions` | 블록별 이력(`block_revisions`)만. 깊이(ADR-0020)는 `note_blocks.depth`에 둔다 | 노트 전체를 특정 판으로 복원(SFR-010 5) |
 | `search_docs`(pgvector + pg_bigm) | 없음. Q&A는 과목 노트를 통째로 맥락에 넣는다 | 노트가 맥락 창을 넘을 때, 노트 검색(SFR-047) |
 | `review_units` + `review_items` + `gradings` | `review_cards` + `attempts` | 문제 재생성 이력, 재평가 이력(DAR-004 4) |
-| 전사 수정 제안, 정지 구간, 답안 초안, 작업 단계 기록 | 없음 | SFR-058, DAR-001 5, SFR-052 4, QUR-007 |
+| 전사 수정 제안, 정지 구간, 답안 초안, 작업 단계 기록(`job_stages`) | 없음 | SFR-058, DAR-001 5, SFR-052 4, QUR-007 |
 
 ## LangGraph
 
 LangGraph 체크포인터를 쓰지 않으므로 LangGraph 자체 테이블(`checkpoints` 등)은 만들지 않는다(ADR-0009).
 
 - Q&A 그래프는 메모리에서만 돌고, 결과만 `messages`·`note_changes`·`observations`에 저장한다.
+- Q&A는 ADR-0022대로 `qa_answer` 하나가 답변 → 반영 → 관찰 단계를 하고, 완료 표시는 `messages.answer_status`·`reflect_status`·`learner_status`다.
 - 과목 노트 업데이트는 모든 단계의 결과를 마지막에 한 트랜잭션으로 반영한다. 중간에 실패하면 처음부터 다시 돌린다. AI 호출은 반복되지만 같은 변경이 두 번 반영되지는 않는다.
 - 실패한 단계부터 재개해야 하면(SFR-043 2), ADR-0009대로 `jobs.completed_stages text[]`를 추가하고 단계마다 결과와 함께 커밋한다.
 

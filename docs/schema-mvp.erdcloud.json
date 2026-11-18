@@ -1192,9 +1192,9 @@
           "relType": null
         },
         {
-          "_id": "TQdg6zTxD24TRoi6i",
+          "_id": "t8pQYZFNYg5oyywb5",
           "name": "답변 상태",
-          "pName": "status",
+          "pName": "answer_status",
           "domain": "",
           "type": "text",
           "defaultValue": "",
@@ -1231,6 +1231,32 @@
           "relType": null
         },
         {
+          "_id": "SzgJNve27D6KGihut",
+          "name": "반영 판단 이유",
+          "pName": "reflect_reason",
+          "domain": "",
+          "type": "text",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "yS7vsWZ5MEaFGiwfQ",
+          "name": "학습 상태 갱신 결과",
+          "pName": "learner_status",
+          "domain": "",
+          "type": "text",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
           "_id": "syYH4WuQ4xFkb3Ch9",
           "name": "생성 시각",
           "pName": "created_at",
@@ -1253,7 +1279,7 @@
       "name": "노트 변경안",
       "position": {
         "x": 2110,
-        "y": 920
+        "y": 984
       },
       "keys": {
         "pks": [
@@ -2552,7 +2578,7 @@
   "shapeData": [],
   "connectorData": [],
   "domainData": [],
-  "createdAt": "2026-11-18T04:15:08.197Z",
+  "createdAt": "2026-11-18T11:54:13.297Z",
   "creatorName": "",
   "creatorThumb": ""
 }
