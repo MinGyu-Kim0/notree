@@ -160,3 +160,17 @@ PR을 리뷰할 때 적용한다. 사람 리뷰어도 같은 기준으로 본다
 - 개인 파일과 이 파일이 충돌하면 이 파일을 따른다. `AGENTS.override.md`는 같은 폴더의 `AGENTS.md`를 대체하므로 모듈 폴더에서만 쓴다.
 - 다른 모듈이 알아야 하는 약속(공개 함수의 사용법 등)은 `docs/`나 이 파일에 적는다.
 - 이 파일, `scripts/check.sh`, `backend/pyproject.toml`의 검사 설정은 PR로 바꾸고 사람 한 명 이상의 승인을 받는다.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues에서 `gh` CLI로 관리한다. `docs/agents/issue-tracker.md` 참고.
+
+### Triage labels
+
+처리 상태 라벨 5개(`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`)를 이름 그대로 쓰고, `scripts/setup_labels.sh`가 만든다. `docs/agents/triage-labels.md` 참고.
+
+### Domain docs
+
+단일 컨텍스트(루트 `GLOSSARY.md` + `docs/adr/`). `docs/agents/domain.md` 참고.
