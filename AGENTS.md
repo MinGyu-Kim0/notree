@@ -112,7 +112,12 @@
 - **이슈**: 작업은 이슈에서 시작한다. 본문은 `.github/ISSUE_TEMPLATE/`에서 종류에 맞는 템플릿(`spec`, `feat`, `bug`)의 절을 채워 쓰고, 템플릿 머리말의 라벨을 붙인다. 문서 수정 같은 작은 변경은 이슈 없이 PR을 연다.
 - **브랜치**: `main`에서 `<모듈>/<이슈 번호>-<짧은 이름>` 브랜치를 만들어 작업한다(예: `capture/12-recording-session`). 이슈가 없으면 번호를 빼고, 모듈에 속하지 않는 변경은 모듈 자리에 `docs`나 `repo`를 쓴다.
 - **제목**: 커밋 제목과 PR 제목은 `<type>(<모듈>): <요약> (<요구사항 ID>)` 형식으로 쓴다(예: `feat(capture): 녹음 세션 시작 API (SFR-003)`). type은 `feat`, `fix`, `docs`, `refactor`, `test`, `chore` 중 하나다. 요구사항에 묶이지 않는 변경은 ID를 뺀다.
-- **PR**: `main`에는 PR로만 병합한다. 본문은 `.github/pull_request_template.md`의 절을 채워 쓰고, 이슈가 있으면 `Closes #<이슈 번호>`를 적는다. PR에 `@codex review` 댓글을 달아 Codex 리뷰를 받고, 사람 한 명 이상이 승인한 뒤 병합한다. 리뷰 기준은 아래 'Code Review Rules'다.
+- **PR**: `main`에는 PR로만 병합한다. 본문은 `.github/pull_request_template.md`의 절을 채워 쓰고, 이슈가 있으면 `Closes #<이슈 번호>`를 적는다. Codex 리뷰를 마치고 사람 한 명 이상이 승인한 뒤 병합한다. 리뷰 기준은 아래 'Code Review Rules'다.
+- **Codex 리뷰**: PR을 열거나 커밋을 푸시하면 Codex 리뷰가 자동으로 돈다. PR을 연 에이전트가 끝까지 처리한다.
+  1. `scripts/codex_review.sh wait <PR 번호>`를 백그라운드로 실행해 머리 커밋의 리뷰를 기다린다. 끝나면 열린 지적이 출력된다.
+  2. 지적마다 고치거나, 고치지 않을 근거를 정한다. 고칠 것은 커밋해 푸시한다. 지적을 따르면 ADR·요구사항과 다른 방향이 되는 경우에는 고치기 전에 사람에게 묻는다.
+  3. 지적마다 `scripts/codex_review.sh resolve <PR 번호> <댓글 ID> <스레드 ID> "<답글>"`로 조치를 답글로 남기고 스레드를 resolve한다. 답글에는 고친 커밋과 바꾼 내용, 또는 고치지 않은 근거를 적는다.
+  4. 푸시했으면 1부터 다시 한다. 머리 커밋의 리뷰에 열린 지적이 0개면 끝난다.
 - **병합 방식**: 되돌릴 때 통째로 되돌리면 되는 가벼운 PR은 squash로 병합한다. 따로 되돌릴 수 있어야 하는 변경이 여럿 든 큰 PR은 merge commit으로 병합해 커밋 이력을 `main`에 남긴다.
 
 ## Code Review Rules
