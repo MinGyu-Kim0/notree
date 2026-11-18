@@ -15,11 +15,12 @@ pr=${2:-}
 repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 
 threads() {
-  gh api graphql -F owner="${repo%/*}" -F name="${repo#*/}" -F pr="$pr" -f query='
-    query($owner: String!, $name: String!, $pr: Int!) {
+  gh api graphql --paginate -F owner="${repo%/*}" -F name="${repo#*/}" -F pr="$pr" -f query='
+    query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
       repository(owner: $owner, name: $name) { pullRequest(number: $pr) {
-        reviewThreads(first: 100) { nodes { id isResolved path line
-          comments(first: 1) { nodes { databaseId author { login } body } } } } } } }' \
+        reviewThreads(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor }
+          nodes { id isResolved path line
+            comments(first: 1) { nodes { databaseId author { login } body } } } } } } }' \
     --jq ".data.repository.pullRequest.reviewThreads.nodes[]
           | select(.isResolved | not) | select(.comments.nodes[0].author.login == \"$BOT\")
           | \"스레드 \(.id) · 댓글 \(.comments.nodes[0].databaseId) · \(.path):\(.line)\n\(.comments.nodes[0].body)\n\""
@@ -27,8 +28,8 @@ threads() {
 
 case "$cmd" in
   wait)
-    head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
     for _ in $(seq 60); do
+      head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)   # 기다리는 사이 푸시되면 새 머리 커밋을 기다린다
       # 요약 댓글의 <!-- codex-review-state:v1 {...} --> 에 커밋별 리뷰 상태가 있다
       done_for_head=$(gh pr view "$pr" --json comments --jq "
         [.comments[] | select(.author.login == \"$BOT\") | .body
