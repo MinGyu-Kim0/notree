@@ -1,0 +1,54 @@
+# 로컬 개발용. 실행 방법은 README.md
+name: notree
+
+x-backend: &backend
+  build: ../backend
+  environment:
+    DATABASE_URL: postgresql+psycopg://notree_app:dev@postgres/notree
+    REDIS_URL: redis://redis:6379
+    NOTREE_DEV_AUTH: "1"
+  volumes:
+    - ../backend:/app
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+
+services:
+  postgres:
+    image: postgres:17.6
+    environment:
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: notree
+    ports:
+      - 127.0.0.1:54320:5432   # PC에 깔린 PostgreSQL(5432)과 겹치지 않게
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 볼륨이 비어 있을 때만, 이름 순서대로 실행된다
+      - ../docs/schema-mvp.sql:/docker-entrypoint-initdb.d/1-schema.sql:ro
+      - ../docs/schema-mvp-security.sql:/docker-entrypoint-initdb.d/2-security.sql:ro
+      - ./seed.sql:/docker-entrypoint-initdb.d/3-seed.sql:ro
+    healthcheck:
+      # 초기화 중에는 TCP를 열지 않으므로, 시드까지 끝나야 통과한다
+      test: pg_isready -h 127.0.0.1 -U postgres -d notree
+      interval: 2s
+      retries: 30
+
+  redis:
+    image: redis:8
+    ports:
+      - 127.0.0.1:6379:6379
+
+  api:
+    <<: *backend
+    command: uvicorn notree.api:app --host 0.0.0.0 --port 8000 --reload --reload-dir notree
+    ports:
+      - 127.0.0.1:8000:8000
+
+  worker:
+    <<: *backend
+    command: taskiq worker notree.worker:broker --ack-type when_executed --workers 1 --reload --reload-dir notree
+
+volumes:
+  pgdata:

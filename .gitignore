@@ -1,0 +1,32 @@
+# Python (backend, evals, scripts)
+.venv/
+__pycache__/
+.*_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Node (frontend: React, Vite, TypeScript)
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# 비밀 값과 인증서 (deploy: compose, Nginx)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 로그와 OS·편집기 파일
+*.log
+.DS_Store
+.idea/
+
+# 개인 하네스 (공통 규칙은 루트 AGENTS.md)
+.claude/settings.local.json
+CLAUDE.local.md
+AGENTS.override.md
+backend/notree/**/AGENTS.md
+backend/notree/**/CLAUDE.md

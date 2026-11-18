@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '모든 답변은 반드시 한국어로 작성한다. 코드, 명령어, 파일 경로, 고유명사는 원문 그대로 둔다.'"
+          }
+        ]
+      }
+    ]
+  }
+}
