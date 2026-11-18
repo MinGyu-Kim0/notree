@@ -16,4 +16,9 @@ needs-info|d876e3|작성자의 추가 정보 대기
 ready-for-agent|1d76db|명세가 끝나 에이전트에 맡길 수 있음
 ready-for-human|b60205|사람이 직접 구현해야 함
 wontfix|ffffff|처리하지 않음
+wayfinder:map|006b75|wayfinder 지도 이슈
+wayfinder:research|c5def5|wayfinder 조사 티켓
+wayfinder:prototype|c5def5|wayfinder 프로토타입 티켓
+wayfinder:grilling|c5def5|wayfinder 질문 정리 티켓
+wayfinder:task|c5def5|wayfinder 작업 티켓
 LABELS

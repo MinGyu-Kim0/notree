@@ -43,7 +43,7 @@ GitHub 이슈를 만든다.
 
 ## wayfinder 동작
 
-`/wayfinder`가 쓴다. **지도**는 이슈 하나이고, **하위** 이슈가 티켓이다.
+`/wayfinder`가 쓴다. **지도**는 이슈 하나이고, **하위** 이슈가 티켓이다. 아래 `wayfinder:*` 라벨은 `scripts/setup_labels.sh`가 만든다.
 
 - **지도**: `wayfinder:map` 라벨을 붙인 이슈 하나. 본문에 Notes / Decisions-so-far / Fog를 둔다. `gh issue create --label wayfinder:map`
 - **하위 티켓**: 지도의 GitHub 하위 이슈로 연결한 이슈(위 **하위 이슈로 연결** 참고). 하위 이슈 기능이 없으면 지도 본문의 작업 목록에 넣고 하위 본문 첫 줄에 `Part of #<지도>`를 적는다. 라벨은 `wayfinder:<종류>`(`research`/`prototype`/`grilling`/`task`)다. 맡으면 작업하는 개발자를 담당자로 지정한다.
