@@ -532,6 +532,8 @@ CREATE TABLE messages (                   -- 질문 원문은 여기에만 둔�
   reflect_reason  text CHECK (char_length(reflect_reason) <= 300),
   reflect_status  text CHECK (reflect_status IN ('pending','applied','held','failed')),  -- SFR-021
   learner_status  text CHECK (learner_status IN ('not_needed','pending','applied','held','failed')),
+  answer_kind     text CHECK (answer_kind IN ('answer','clarification','conflict')),   -- 답변 종류
+  truncated       boolean NOT NULL DEFAULT false,   -- 맥락 자료나 출력을 잘랐음 (PER-004 4)
   evidence_as_of  timestamptz,            -- 녹음 중 확정 전사의 기준 시각 (SFR-016 3)
   completed_at    timestamptz,
   deletion_batch_id bigint,
@@ -544,7 +546,7 @@ CREATE TABLE messages (                   -- 질문 원문은 여기에만 둔�
 CREATE INDEX ON messages (user_id, conversation_id, id);
 -- answer_status·reflect_status·learner_status는 qa_answer 작업의 단계 완료 표시다. 각 단계 결과와 같은 트랜잭션에서 쓰고,
 -- 인계·재시도 때 이 값을 보고 남은 단계만 한다. 반영·관찰 단계는 answer_status = 'completed'일 때만 돈다 (9장 D11).
--- 확인 질문·상충 안내 답변은 저장 트랜잭션에서 reflect_need·learner_status를 'not_needed'로 쓰고 두 단계를 건너뛴다.
+-- 확인 질문·상충 안내 답변(answer_kind = 'clarification'·'conflict')은 저장 트랜잭션에서 reflect_need·learner_status를 'not_needed'로 쓰고 두 단계를 건너뛴다.
 ```
 
 ## 6. learner

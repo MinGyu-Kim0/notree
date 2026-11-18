@@ -20,7 +20,7 @@
 
 ## 지금 단계: MVP
 
-지금 코드는 MVP 스키마(`docs/schema-mvp.sql`)를 기준으로 만든다. `docs/schema.md`와 ADR의 장치 가운데 MVP에 없는 것(복합 FK, outbox, 실행 권한, 세대 번호, 삭제 묶음, 노트 버전)은 MVP가 검증된 뒤 리팩터링으로 넣는다. [docs/schema-mvp.md](docs/schema-mvp.md)의 'v2에서 뺀 것' 표가 그 목록이다. 이런 장치가 필요해 보이면 만들기 전에 사람에게 묻는다.
+지금 코드는 MVP 스키마(`docs/schema-mvp.sql`)를 기준으로 만든다. `docs/schema.md`와 ADR의 장치 가운데 MVP에 없는 것(복합 FK, outbox의 이벤트 전달, 실행 권한, 세대 번호, 삭제 묶음, 노트 버전)은 MVP가 검증된 뒤 리팩터링으로 넣는다. [docs/schema-mvp.md](docs/schema-mvp.md)의 'v2에서 뺀 것' 표가 그 목록이다. 이런 장치가 필요해 보이면 만들기 전에 사람에게 묻는다.
 
 알고 건너뛰는 곳에는 `# shortcut: <한계>, <언제 고칠지>` 주석을 남긴다.
 
