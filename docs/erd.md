@@ -1,5 +1,6 @@
 <!-- 2026-11-17 스키마(테이블 42개)를 실제 DB에 적용해 카탈로그에서 생성했다. 생성 스크립트는 남기지 않았다. 스키마를 바꾸면 이 그림도 다시 만든다. -->
 <!-- 2026-11-18 손으로 고침: note_versions.depths, note_updates.completed_stages, note_changes.job_id, jobs(attempt_no·request_hash, heartbeat_at 제거), outbox 추가. 다음에 DB에서 다시 생성할 때 대조한다. -->
+<!-- 2026-11-19 손으로 고침: note_updates.completed_stages 제거(ADR-0023), messages.answer_kind·truncated 추가. LangGraph 체크포인트 테이블(langgraph 스키마)은 그리지 않는다. -->
 
 # Notree ERD
 
@@ -295,7 +296,6 @@ erDiagram
     int note_generation
     int run_seconds
     bigint result_version_id FK
-    text_array completed_stages
     text failed_stage
     text error_code
     timestamptz started_at
@@ -431,6 +431,8 @@ erDiagram
     text reflect_reason
     text reflect_status
     text learner_status
+    text answer_kind
+    boolean truncated
     timestamptz evidence_as_of
     timestamptz completed_at
     bigint deletion_batch_id

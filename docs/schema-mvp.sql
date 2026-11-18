@@ -1,4 +1,4 @@
--- Notree MVP 스키마 (테이블 18개). 설계 노트: docs/schema-mvp.md
+-- Notree MVP 스키마 (테이블 20개). 설계 노트: docs/schema-mvp.md
 -- 핵심 흐름만 담는다: 녹음·전사 → 노트 → Q&A로 노트 보완 → 이해 상태에 맞춘 복습.
 -- 테이블·FK·인덱스·논리명(COMMENT)만 있다. RLS·권한은 schema-mvp-security.sql을 이 파일 다음에 실행한다.
 -- 규칙 (postgres-patterns 스킬): ID bigint identity · text · timestamptz · 상태값 text + CHECK · FK마다 인덱스
@@ -116,6 +116,24 @@ CREATE TABLE note_blocks (
 );
 CREATE INDEX note_blocks_note ON note_blocks (note_id, position);
 
+-- 과목 노트 업데이트 한 번 (SFR-008). id가 LangGraph 체크포인트의 thread_id다 (ADR-0023).
+-- 체크포인트 테이블은 langgraph 스키마에 worker가 setup()으로 만든다. 업데이트가 끝나면(completed·cancelled) thread를 지운다.
+CREATE TABLE note_updates (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id     bigint NOT NULL,
+  note_id     bigint NOT NULL REFERENCES notes ON DELETE CASCADE,   -- 과목 노트
+  status      text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'paused', 'awaiting_user',
+                                                               'completed', 'failed', 'cancelled')),
+  lecture_ids bigint[] NOT NULL DEFAULT '{}',   -- 이 업데이트가 반영하는 강의. 시작할 때 아직 반영되지 않은 강의로 정한다
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz,
+  CHECK ((status IN ('completed', 'failed', 'cancelled')) = (finished_at IS NOT NULL))
+);
+-- 과목 노트당 진행 중 1, 대기 요청 1. 대기 요청이 이미 있으면 새 요청은 그 행에 합친다
+CREATE UNIQUE INDEX note_updates_one_open ON note_updates (note_id) WHERE status IN ('running', 'paused', 'awaiting_user');
+CREATE UNIQUE INDEX note_updates_one_queued ON note_updates (note_id) WHERE status = 'queued';
+-- 반영 노드는 노트 변경과 status = 'completed'를 한 트랜잭션으로 커밋하고, 이미 completed면 건너뛴다 (이중 반영 방지)
+
 -- ─── 질의응답 ──────────────────────────────────────────────────
 
 CREATE TABLE conversations (
@@ -159,6 +177,7 @@ CREATE TABLE note_changes (
   user_id    bigint NOT NULL,
   note_id    bigint NOT NULL REFERENCES notes ON DELETE CASCADE,
   message_id bigint REFERENCES messages ON DELETE SET NULL,      -- 대화를 지워도 반영 기록은 남는다
+  note_update_id bigint REFERENCES note_updates ON DELETE SET NULL,   -- 과목 노트 업데이트가 사용자 확인을 기다리는 의미 충돌 (SFR-008 4)
   block_id   uuid REFERENCES note_blocks ON DELETE SET NULL,     -- 대상 블록. 추가면 반영 뒤 새 블록
   op         text NOT NULL CHECK (op IN ('add', 'modify', 'supplement', 'delete')),
   proposal   jsonb NOT NULL,
@@ -170,6 +189,7 @@ CREATE TABLE note_changes (
 );
 CREATE INDEX note_changes_note ON note_changes (note_id, created_at);
 CREATE INDEX note_changes_message ON note_changes (message_id) WHERE message_id IS NOT NULL;
+CREATE INDEX note_changes_update ON note_changes (note_update_id) WHERE note_update_id IS NOT NULL;
 CREATE INDEX note_changes_block ON note_changes (block_id) WHERE block_id IS NOT NULL;
 
 CREATE TABLE block_revisions (                   -- 블록이 바뀔 때마다 한 행. 바꾸지 않는다
@@ -270,7 +290,7 @@ CREATE TABLE jobs (
   id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id     bigint NOT NULL REFERENCES users ON DELETE CASCADE,
   -- final_note: 강의 최종 노트 생성 (SFR-007)
-  -- course_update: 과목 노트 업데이트 (SFR-008)
+  -- course_update: 과목 노트 업데이트 시작·재개 (SFR-008). target_id = note_updates.id
   -- qa_answer: Q&A 답변 → 노트 반영 → 관찰 단계 (ADR-0022)
   -- generate_card: 복습 카드 출제 (SFR-034)
   -- grade: 답안 채점과 관찰 추가 (SFR-035)
@@ -403,6 +423,15 @@ COMMENT ON COLUMN note_blocks.deleted_at IS '삭제 시각';
 COMMENT ON COLUMN note_blocks.updated_at IS '수정 시각';
 COMMENT ON COLUMN note_blocks.created_at IS '생성 시각';
 
+COMMENT ON TABLE note_updates IS '과목 노트 업데이트';
+COMMENT ON COLUMN note_updates.id IS '업데이트 ID';
+COMMENT ON COLUMN note_updates.user_id IS '사용자 ID';
+COMMENT ON COLUMN note_updates.note_id IS '과목 노트 ID';
+COMMENT ON COLUMN note_updates.status IS '업데이트 상태';
+COMMENT ON COLUMN note_updates.lecture_ids IS '반영할 강의 ID 목록';
+COMMENT ON COLUMN note_updates.created_at IS '생성 시각';
+COMMENT ON COLUMN note_updates.finished_at IS '종료 시각';
+
 COMMENT ON TABLE conversations IS '대화';
 COMMENT ON COLUMN conversations.id IS '대화 ID';
 COMMENT ON COLUMN conversations.user_id IS '사용자 ID';
@@ -431,6 +460,7 @@ COMMENT ON COLUMN note_changes.id IS '변경안 ID';
 COMMENT ON COLUMN note_changes.user_id IS '사용자 ID';
 COMMENT ON COLUMN note_changes.note_id IS '노트 ID';
 COMMENT ON COLUMN note_changes.message_id IS '메시지 ID';
+COMMENT ON COLUMN note_changes.note_update_id IS '과목 노트 업데이트 ID';
 COMMENT ON COLUMN note_changes.block_id IS '대상 블록 ID';
 COMMENT ON COLUMN note_changes.op IS '변경 종류';
 COMMENT ON COLUMN note_changes.proposal IS '변경 내용';

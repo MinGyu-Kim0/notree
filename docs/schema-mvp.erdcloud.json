@@ -1016,6 +1016,115 @@
       "color": "rgba(178, 27, 0, 0.5)"
     },
     {
+      "_id": "xsBPS4uNrAS5wvzup",
+      "_diagramId": "YpQYSpgDtsy95cT3D",
+      "pName": "note_updates",
+      "name": "과목 노트 업데이트",
+      "position": {
+        "x": 1440,
+        "y": 1112
+      },
+      "keys": {
+        "pks": [
+          {
+            "_id": "attaQCktKsbT7vSDx",
+            "name": "업데이트 ID",
+            "pName": "id",
+            "domain": "",
+            "type": "bigint",
+            "defaultValue": "",
+            "isAllowNull": false,
+            "comment": "",
+            "relEntity": null,
+            "relFieldId": null,
+            "relType": null
+          }
+        ],
+        "fks": []
+      },
+      "fields": [
+        {
+          "_id": "uDaoJKN4x6X9ookkf",
+          "name": "사용자 ID",
+          "pName": "user_id",
+          "domain": "",
+          "type": "bigint",
+          "defaultValue": "",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "4n6Ho5Xmfh2YZJ3oK",
+          "name": "과목 노트 ID",
+          "pName": "note_id",
+          "domain": "",
+          "type": "bigint",
+          "defaultValue": "",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": "9438F7z2cw6qRenjh",
+          "relFieldId": "9cJcTAPGKfD7PKTYj",
+          "relType": "ZERO_OR_ONE_OR_MANY"
+        },
+        {
+          "_id": "EcqGsqXAQ8B4ojDCR",
+          "name": "업데이트 상태",
+          "pName": "status",
+          "domain": "",
+          "type": "text",
+          "defaultValue": "'queued'",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "Z9P3jSwDTYZPwaGeb",
+          "name": "반영할 강의 ID 목록",
+          "pName": "lecture_ids",
+          "domain": "",
+          "type": "bigint[]",
+          "defaultValue": "'{}'",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "nHQjMEdTy6RgKhbvk",
+          "name": "생성 시각",
+          "pName": "created_at",
+          "domain": "",
+          "type": "timestamptz",
+          "defaultValue": "now()",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "pyRewn3AqcyqQXizd",
+          "name": "종료 시각",
+          "pName": "finished_at",
+          "domain": "",
+          "type": "timestamptz",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        }
+      ],
+      "color": "rgba(178, 27, 0, 0.5)"
+    },
+    {
       "_id": "iMseuh5Ar34ctyJov",
       "_diagramId": "YpQYSpgDtsy95cT3D",
       "pName": "conversations",
@@ -1366,6 +1475,19 @@
           "relType": "ZERO_OR_ONE_OR_MANY"
         },
         {
+          "_id": "TYeqmh2CbyHwyoxgZ",
+          "name": "과목 노트 업데이트 ID",
+          "pName": "note_update_id",
+          "domain": "",
+          "type": "bigint",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": "xsBPS4uNrAS5wvzup",
+          "relFieldId": "attaQCktKsbT7vSDx",
+          "relType": "ZERO_OR_ONE_OR_MANY"
+        },
+        {
           "_id": "wogqaYKZi2DcMoYNC",
           "name": "대상 블록 ID",
           "pName": "block_id",
@@ -1466,7 +1588,7 @@
       "name": "블록 이력",
       "position": {
         "x": 1440,
-        "y": 1112
+        "y": 1506
       },
       "keys": {
         "pks": [
@@ -2687,7 +2809,7 @@
   "shapeData": [],
   "connectorData": [],
   "domainData": [],
-  "createdAt": "2026-11-18T22:50:14.861Z",
+  "createdAt": "2026-11-18T23:34:42.256Z",
   "creatorName": "",
   "creatorThumb": ""
 }

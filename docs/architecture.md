@@ -181,8 +181,15 @@ sequenceDiagram
   K->>K: 근거 ID와 구간 ID가 입력 안에 있는지 검증(없으면 '근거 미확인'·제안 폐기)
   K->>P: 최종 노트 새 버전 발행(반영 확인, 기존 버전이 있으면 SFR-022 병합), 수정 제안 저장
   K->>P: jobs(과목 노트 업데이트) + outbox 추가
-  K->>K: 과목 노트 업데이트 그래프(LangGraph, 체크포인터 없음): 입력 → 병합(단원별) → 충돌 분류 → 반영
-  K->>P: 과목 노트 편집 잠금(읽기 허용), 단계마다 결과 + 완료 단계 커밋, 사용자 확인이 필요한 충돌은 보류
+  K->>K: 과목 노트 업데이트 그래프(LangGraph, Postgres 체크포인터): 입력 → 배치 → 단원별 병합(Send) → 충돌 분류 → 반영
+  K->>P: 과목 노트 편집 잠금(읽기 허용), 노드마다 체크포인트 저장
+  alt 의미 충돌 있음
+    K->>P: 충돌을 note_changes(pending)로 저장, note_updates awaiting_user, 잠금 해제 (interrupt, 작업 끝)
+    K-->>B: SSE 사용자 확인 필요
+    B->>P: 충돌마다 수락·거절 → 모두 결정하면 jobs(과목 노트 업데이트 재개) + outbox
+    K->>K: 같은 thread를 Command(resume)로 이어 감
+  end
+  K->>P: 반영: 노트 변경 + note_updates completed (한 트랜잭션), thread 삭제
   K-->>B: SSE 진행·완료
   B->>P: 수정 제안 수락 → 정정 버전, 용어 후보
   B->>P: 검토 완료 → 수락분을 근거로 쓰는 블록만 재생성(사용자 편집 블록은 확인 필요) → 새 최종 노트 버전 → 과목 노트 업데이트
@@ -190,7 +197,8 @@ sequenceDiagram
 ```
 
 - **과목 노트 업데이트** (SFR-008): 과목 노트당 실행 중 1개, 재개 대기 1개, 대기 요청 1개다. 연속 실행 10분이면 일시정지한다. 일시정지하면 중간 결과를 보존하고, 취소하면 세대 번호를 올려 늦은 결과를 버린다. 잠금은 DB `notes.locked_until`이고, 작업이 20초마다 60초 뒤로 연장하므로 비정상 종료돼도 60초 안에 풀린다(QUR-002, [ADR-0018](adr/0018-db-fencing-redis-lease.md)).
-- **단계 재개** ([ADR-0009](adr/0009-langgraph-graphs-with-openai-sdk.md)): 단계가 끝날 때마다 그 단계의 결과와 `note_updates`의 완료 단계를 한 트랜잭션으로 커밋한다. 일시정지·인계 뒤에는 완료 단계 다음부터 이어 간다. 사용자 확인이 필요한 충돌은 `note_changes(status='pending')`로 남긴다.
+- **재개와 사용자 확인** ([ADR-0023](adr/0023-course-update-checkpointer-and-interrupt.md)): Postgres 체크포인터(`langgraph` 스키마, `thread_id = note_updates.id`)가 노드마다 상태를 저장하고, 일시정지·인계 뒤에는 마지막 체크포인트부터 이어 간다. 단원별 병합은 `Send`로 단원마다 병렬 실행하고, 끝난 단원은 다시 하지 않는다. 의미 충돌(SFR-008 4)은 `note_changes(status='pending', note_update_id)`로 저장하고 `interrupt`로 멈춘다. 사용자가 모두 결정하면 재개 작업이 이어 간다. 부작용은 반영 노드에만 있고, 노트 변경과 `note_updates.status = 'completed'`를 한 트랜잭션으로 커밋해 이중 반영을 막는다.
+- **단원**: 과목 노트의 최상위 제목 블록과 다음 최상위 제목 앞까지의 블록. 그 제목 블록 ID로 식별한다. 배치 단계에서 LLM이 새 강의 블록마다 기존 단원이나 새 단원을 정하고, 이 계획은 체크포인트에 남는다.
 - **노트 재생성과 사용자 편집** (SFR-022, QUR-002): 강의에 녹음 세션이 추가되거나 수정 제안을 반영해 최종 노트를 다시 만들 때도 과목 노트와 같은 규칙을 쓴다. 사용자가 작성한 블록은 원문 그대로 두고, 사용자가 고친 AI 블록은 충돌로 확인을 요청한다. 처리 결과는 `note_changes`(origin `lecture_regen`)에 남는다.
 - **STT 원본 삭제**: 정정이 확정되고 7일 뒤 `cron`이 그 구간의 STT 원본을 지운다. 블록 근거는 정정 버전으로 옮기고, 원본을 근거로 쓰던 블록은 "갱신 필요"를 유지한다. "출처 삭제됨"으로 처리하지 않는다.
 
@@ -322,7 +330,7 @@ sequenceDiagram
 | 반영 확인 | AI 결과에 근거 (자료 ID, 버전) 목록을 붙인다. 대상별 세대 번호를 둔다. 커밋 트랜잭션에서 대상 행을 잠그고 근거 버전, 세대 번호, 실행 시도 번호, 읽었던 노트 버전을 비교한다. 근거 수정·노트 버전 변경이면 다시 계산하고, 삭제·권한 상실·취소면 끝낸다. Q&A 답변만 예외로, 근거가 수정·삭제됐으면 다시 생성하지 않고 '근거 변경됨'으로 저장한다(SFR-016 8). | [ADR-0006](adr/0006-commit-time-evidence-check.md) |
 | 작업 등록 | `jobs` 행과 `outbox` 행을 도메인 변경과 같은 트랜잭션에서 넣는다. 커밋 직후 Taskiq로 보내고(작업 ID만) `sent_at`을 채운다. 회수 루프는 오래된 미전송 outbox만 다시 보낸다. 요청 식별자가 같으면 기존 작업을 돌려준다. ACK는 결과 커밋 뒤에 한다. | [ADR-0017](adr/0017-taskiq-delivery-sdk-retries.md), [ADR-0019](adr/0019-outbox-and-ack-after-commit.md) |
 | 실행 권한 | Redis lease(`NX`, TTL 30초, heartbeat 10초)를 먼저 잡고 DB `jobs.attempt_no`를 올린다. 모든 결과 반영 트랜잭션은 `attempt_no`를 확인한다. Redis가 잃는 것은 중복 호출 비용일 뿐이다. | [ADR-0018](adr/0018-db-fencing-redis-lease.md) |
-| 작업 재개 | 단계가 있는 작업(과목 노트 업데이트, Q&A)은 단계 결과와 완료 표시를 한 트랜잭션으로 커밋하고, 이때 `attempt_no`를 확인한다. 인계·재시도 때는 완료 표시를 보고 남은 단계부터 한다. 완료 표시는 과목 노트 업데이트가 `note_updates.completed_stages`, Q&A가 `messages.answer_status`·`reflect_status`·`learner_status`다. LangGraph 체크포인터는 쓰지 않는다. | [ADR-0009](adr/0009-langgraph-graphs-with-openai-sdk.md), [ADR-0022](adr/0022-qa-followup-stages-in-one-job.md), SFR-043 |
+| 작업 재개 | Q&A는 단계 결과와 완료 표시(`messages.answer_status`·`reflect_status`·`learner_status`)를 한 트랜잭션으로 커밋하고, 재시도 때 남은 단계부터 한다. 과목 노트 업데이트는 Postgres 체크포인터로 마지막 노드부터 이어 가고, 반영 노드가 `note_updates.status`로 이중 반영을 막는다. 결과 반영 트랜잭션은 `attempt_no`를 확인한다. | [ADR-0022](adr/0022-qa-followup-stages-in-one-job.md), [ADR-0023](adr/0023-course-update-checkpointer-and-interrupt.md), SFR-043 |
 | 재시도 | OpenAI SDK `max_retries`(초기값 배경 작업 2, Q&A 답변 단계 1. 외부 호출 하나당 최대 4회 안, 재시도할 수 없는 오류는 바로 실패). Taskiq 재시도는 쓰지 않는다. 워커 장애 인계는 `attempt_no`가 3을 넘으면 실패로 끝낸다. 호출마다 작업 마감까지 남은 시간 안에서 timeout을 둔다. | [ADR-0017](adr/0017-taskiq-delivery-sdk-retries.md), QUR-004, SIR-002 |
 | 이벤트 | 토큰·진행은 사용자별 Redis Stream에 쌓고 SSE로 보낸다. `Last-Event-ID`로 재개한다. 완료·실패·취소는 outbox를 거친다. 이벤트에 작업 ID와 실행 시도 번호를 붙인다. | [ADR-0005](adr/0005-sse-for-events-websocket-for-recording.md) |
 | 비용 예약 | Postgres 예약 장부에 호출 전 예약하고 호출 뒤 정산한다. 작업 등록과 같은 트랜잭션에서 한다. 사용자 하루 1달러, 전체 하루 10달러(UTC). 작업을 끝내는 모든 경로(성공·실패·취소·인계 상한 초과)는 같은 트랜잭션에서 그 작업의 남은 예약을 정산하거나 `released`로 바꾼다. 예약은 날짜가 바뀌어도 한도에 남기 때문이다(PER-003 2). | PER-003 |
@@ -332,7 +340,7 @@ sequenceDiagram
 | 세션 철회 | 세션 테이블에 철회 시각을 커밋한다. `realtime`은 음성 묶음마다, `api`는 요청마다 세션을 확인한다. 철회 이벤트를 받으면 연결을 닫는다. | SFR-044 |
 | 원문 보호 | 질문 원문은 대화 테이블에만 둔다. 작업 메시지, 로그, 추적 기록에는 ID만 남긴다. JSON 로그에 원문·키 필터를 공통으로 건다. | SER-001, SER-003, QUR-007 |
 | 출처 검증 | AI 출력의 근거 ID와 구간 ID가 그 작업의 입력 안에 있는지 서버가 검증한다. 웹 근거는 웹 검색 도구 응답의 인용 목록에 있는 URL만 통과한다. 근거가 내용을 실제로 뒷받침하는지는 `evals/`에서 따로 잰다. | [ADR-0007](adr/0007-block-revisions-and-note-versions.md), QUR-001 |
-| AI 호출 | 모든 모델 호출은 OpenAI SDK로 직접 한다. LangChain은 쓰지 않는다. Q&A 답변 생성(답변 저장까지)과 과목 노트 업데이트만 LangGraph 그래프로 만든다. Q&A의 반영·관찰 단계는 같은 작업 안의 일반 함수다(ADR-0022). LangGraph 체크포인터는 쓰지 않고, 재개는 DB 단계 완료 기록으로 한다. 외부 추적 도구(LangSmith 등)는 쓰지 않는다. | [ADR-0009](adr/0009-langgraph-graphs-with-openai-sdk.md), COR-002 |
+| AI 호출 | 모든 모델 호출은 OpenAI SDK로 직접 한다. LangChain은 쓰지 않는다. Q&A 답변 생성(답변 저장까지)과 과목 노트 업데이트만 LangGraph 그래프로 만든다. Q&A의 반영·관찰 단계는 같은 작업 안의 일반 함수다(ADR-0022). Q&A 그래프는 체크포인터 없이 메모리에서만 돌고(SER-001 4), 과목 노트 업데이트 그래프만 Postgres 체크포인터와 `interrupt`를 쓴다. 외부 추적 도구(LangSmith 등)는 쓰지 않는다. | [ADR-0009](adr/0009-langgraph-graphs-with-openai-sdk.md), [ADR-0023](adr/0023-course-update-checkpointer-and-interrupt.md), COR-002 |
 
 ## 6. 데이터 모델 개요
 
