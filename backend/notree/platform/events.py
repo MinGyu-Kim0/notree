@@ -76,11 +76,9 @@ async def stream(user_id: int, last_event_id: str | None) -> AsyncGenerator[str,
             yield ": keepalive\n\n"
             continue
         entries = batches[0][1]
-        # 느린 화면이 읽지 않는 사이 cursor 뒤가 잘렸을 수 있다. 잘렸다면 남은 것이 한꺼번에 MAX_EVENTS건 넘게 온다.
-        # 그때 마지막으로 보낸 이벤트가 Stream에 없으면 그 뒤를 놓쳤을 수 있으니 reload로 알리고 지금부터 보낸다
-        if len(entries) >= MAX_EVENTS and not await redis.xrange(
-            key, cursor, cursor, count=1
-        ):
+        # 마지막으로 보낸 이벤트가 Stream에 없으면 그 뒤를 놓쳤을 수 있다. 느린 화면이 읽지 않는 사이 잘렸거나,
+        # Redis가 재시작돼(디스크에 쓰지 않는다) 통째로 사라진 경우다. reload로 알리고 지금부터 보낸다
+        if cursor != "0-0" and not await redis.xrange(key, cursor, cursor, count=1):
             cursor = entries[-1][0]
             yield "event: reload\ndata: {}\n\n"
             continue

@@ -10,7 +10,7 @@ from sqlalchemy import delete, text, update
 
 from notree.platform import usage
 from notree.platform.db import user_tx
-from notree.platform.jobs import Job
+from notree.platform.jobs import Job, fail_job
 from notree.platform.usage import BudgetExceeded, UsageLedger, reserve, settle
 from tests.conftest import login
 
@@ -79,14 +79,44 @@ async def test_reserve_rejects_job_of_another_user(users: tuple[int, int]) -> No
 async def test_reserve_rejects_finished_job(users: tuple[int, int]) -> None:
     user_id, _ = users
     async with user_tx(user_id) as db:
-        job = Job(
-            user_id=user_id, kind="grade", status="failed"
-        )  # 회수 루프가 이미 끝냈다
-        db.add(job)
+        job = Job(user_id=user_id, kind="grade", status="failed")  # 회수 루프가 끝냈다
+        queued = Job(
+            user_id=user_id, kind="qa_answer"
+        )  # Q&A API가 등록과 함께 예약한다
+        db.add_all([job, queued])
     try:
         with pytest.raises(LookupError):
             async with user_tx(user_id) as db:
                 await reserve(db, Decimal("0.1"), job_id=job.id)
+        async with user_tx(user_id) as db:
+            await reserve(db, Decimal("0.1"), job_id=queued.id)
+    finally:
+        async with user_tx(user_id) as db:
+            await db.execute(delete(Job).where(Job.id.in_((job.id, queued.id))))
+
+
+async def test_failing_job_waits_for_reservation_then_releases_it(
+    users: tuple[int, int],
+) -> None:
+    """A-22: 예약이 상태를 읽은 직후 실패 처리가 겹쳐도 예약이 held로 남지 않는다."""
+    user_id, _ = users
+    async with user_tx(user_id) as db:
+        job = Job(user_id=user_id, kind="grade", status="running")
+        db.add(job)
+
+    async def fail() -> None:
+        async with user_tx(user_id) as db:
+            await fail_job(db, job.id, "stalled")
+
+    try:
+        async with user_tx(user_id) as db:
+            ledger_id = await reserve(db, Decimal("0.1"), job_id=job.id)
+            failing = asyncio.create_task(fail())
+            await asyncio.sleep(0.3)
+            assert not failing.done()  # 예약이 커밋될 때까지 기다린다
+        await failing
+        async with user_tx(user_id) as db:
+            assert (await db.get_one(UsageLedger, ledger_id)).status == "released"
     finally:
         async with user_tx(user_id) as db:
             await db.execute(delete(Job).where(Job.id == job.id))

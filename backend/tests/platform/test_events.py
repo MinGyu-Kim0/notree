@@ -89,6 +89,25 @@ async def test_reload_when_events_are_trimmed_while_connected(
         assert await receive(frames) == (new, "done", {})  # 남은 옛 이벤트는 건너뛴다
 
 
+async def test_reload_when_redis_lost_events_while_connected(
+    users: tuple[int, int],
+) -> None:
+    a, _ = users
+    before = await publish(a, "token", {})
+    async with aclosing(stream(a, None)) as frames:
+        assert await frame(frames) == f"id: {before}\n\n"
+        await publish(a, "done", {})  # 화면이 읽기 전에
+        await events.redis.delete(
+            f"events:{a}"
+        )  # Redis가 재시작돼 이벤트를 잃었다(디스크에 쓰지 않는다)
+        # 새 Stream의 ID는 지금 시각(밀리초)이라 같은 밀리초면 지운 ID와 같아진다. 실제 재시작에서는 생기지 않는다
+        await anyio.sleep(0.01)
+        await publish(a, "token", {"n": 1})  # 재시작 뒤 적은 이벤트만 쌓였다
+        assert await receive(frames) == (None, "reload", {})
+        new = await publish(a, "done", {})
+        assert await receive(frames) == (new, "done", {})
+
+
 async def test_many_events_arrive_without_reload_when_none_were_trimmed(
     users: tuple[int, int],
 ) -> None:
