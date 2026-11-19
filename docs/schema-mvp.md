@@ -37,7 +37,7 @@ docker stop notree-mvp
 | | 과목 노트 업데이트 | `note_updates` | 업데이트 한 번의 상태(대기·실행·일시정지·사용자 확인 대기·완료). `id`가 체크포인트 thread |
 | 질의응답 | 대화 | `conversations` | 과목별 대화 |
 | | 대화 메시지 | `messages` | 질문 원문, 완료된 답변, Q&A 단계별 결과(답변·노트 반영·학습 상태 갱신) |
-| | 노트 변경안 | `note_changes` | Q&A가 제안한 노트 변경과 처리 상태(확인 필요·반영·거절·되돌림·보류) |
+| | 노트 변경안 | `note_changes` | Q&A와 과목 노트 업데이트가 제안한 노트 변경, 판단할 때 본 판 번호, 처리 상태(확인 필요·수락·반영·거절·되돌림·보류) |
 | 학습자 | 개념 | `concepts` | 과목별 개념과 이해 상태 |
 | | 관찰 | `observations` | 이해 상태의 근거. 복습 답안 또는 Q&A에서 나온다 |
 | 복습 | 복습 카드 | `review_cards` | 문제 하나와 FSRS 일정 |
@@ -82,19 +82,26 @@ flowchart TB
   IN[입력 · 코드<br/>과목 노트 + 아직 반영하지 않은 강의 최종 노트] --> PLAN{배치 · LLM<br/>강의 블록 → 기존 단원 또는 새 단원}
   PLAN -- Send · 단원마다 --> MERGE[단원별 병합 · LLM<br/>병렬 실행]
   MERGE --> CLS{충돌 분류<br/>자동 반영 · 사용자 확인}
-  CLS -- 충돌 없음 --> APPLY[(반영 · 트랜잭션<br/>노트 변경 + status completed)]
-  CLS -- 의미 충돌 있음 --> ASK[[interrupt<br/>충돌을 note_changes pending으로 저장하고 멈춤]]
+  CLS -- 충돌 없음 --> APPLY[(반영 · 트랜잭션<br/>판 번호 비교 + 노트 변경 + status completed)]
+  CLS -- 의미 충돌 있음 --> SAVE[(충돌 저장 · 트랜잭션<br/>note_changes pending, 이미 있으면 건너뜀)]
+  SAVE --> ASK[[interrupt<br/>저장 없이 멈춤 · awaiting_user]]
   ASK -. 사용자가 모두 결정 → 재개 작업 .-> APPLY
   APPLY --> END([끝 · thread 삭제])
 ```
 
 - **단원**: 과목 노트의 최상위 제목 블록과 다음 최상위 제목 앞까지의 블록. 그 제목 블록 ID로 식별한다. 첫 최상위 제목 앞의 블록은 '머리말' 단원 하나다. 새 단원은 배치 단계에서 서버가 UUIDv7을 미리 발급한다.
 - **재개**: 체크포인터가 노드마다 상태(배치 계획, 끝난 단원의 병합 결과)를 저장한다. 워커가 죽으면 끝난 노드와 끝난 단원은 다시 하지 않는다. 단원 병합 동시 실행은 4개까지다(초기값).
-- **이중 반영**: 부작용은 반영 노드에만 있다. 노트 변경과 `note_updates.status = 'completed'`를 한 트랜잭션으로 커밋하고, 이미 `completed`면 건너뛴다.
-- **사용자 확인 대기**: `status = 'awaiting_user'`, 작업은 끝나고 편집 잠금은 푼다(SFR-008 5). 화면은 `note_changes(status='pending', note_update_id)`를 읽는다. 사용자가 모두 결정하면 api가 같은 `note_updates.id`로 `course_update` 작업을 넣고, worker가 `Command(resume=...)`로 이어 간다. 그사이 노트가 바뀌었으면 충돌 분류부터 다시 한다(ADR-0006).
+- **이중 반영**: 부작용은 충돌 저장 노드와 반영 노드에만 있다.
+  - 충돌 저장 노드는 이 `note_update_id`의 변경안이 이미 있으면 건너뛴다. 저장을 커밋한 직후, 체크포인트를 쓰기 전에 워커가 죽어 노드가 다시 돌아도 같은 충돌이 두 번 저장되지 않는다.
+  - `interrupt` 노드는 아무것도 저장하지 않는다. LangGraph는 재개할 때 `interrupt()`를 부른 노드를 처음부터 다시 실행하기 때문이다.
+  - 반영 노드는 노트 변경과 `note_updates.status = 'completed'`를 한 트랜잭션으로 커밋하고, 이미 `completed`면 건너뛴다.
+- **사용자 확인 대기**: `status = 'awaiting_user'`이고 작업은 끝난다. 화면은 `note_changes(status='pending', note_update_id)`를 읽는다. 사용자는 충돌마다 수락(`accepted`)하거나 거절(`rejected`)한다. 그 `note_update_id`의 `pending`이 0개가 되면 api가 같은 `note_updates.id`로 `course_update` 작업을 넣고, worker가 `Command(resume=...)`로 이어 간다. 반영 노드는 결정을 체크포인트가 아니라 `note_changes`에서 읽어, `accepted`를 반영하고 `applied`로 바꾼다. `rejected`는 기존 블록을 그대로 둔다.
+- **판 번호 비교** (QUR-002): MVP에는 편집 잠금이 없어서 업데이트 도중에도 사용자가 과목 노트를 고칠 수 있다. 그래서 병합 단계가 읽은 블록의 `revision`을 그래프 상태에 두고, 충돌로 저장할 때는 `note_changes.base_revision`에 둔다. 반영 노드는 바꿀 블록마다 이 값을 지금의 `revision`과 비교한다. 다르면 그 변경은 반영하지 않고 `note_changes(status='held')`로 남기며, 이유에 '판단 뒤 사용자가 블록을 고침'을 적는다. 화면은 보류 항목에 AI 제안과 지금 블록을 함께 보여 주고, 사용자가 [제안대로 반영]을 누르면 api가 반영한다. Q&A 변경안을 반영할 때도 같은 비교를 한다(SFR-020 2).
+- shortcut: 판 번호가 달라 보류된 변경은 사용자가 직접 메운다, 보류가 자주 생기면 그 단원만 지금 블록으로 다시 병합한다.
 - **기다리는 동안**: Q&A 반영은 '과목 노트 업데이트 중'으로 대기한다(과목 노트당 20개, SFR-020 5). 새 강의는 `queued` 행 하나에 합쳐 진행 중인 업데이트가 끝난 뒤 돈다.
 - **일시정지·취소** (SFR-008 6): 일시정지는 노드 사이에서 `paused`를 확인해 멈추고 같은 thread로 이어 간다. 취소는 `cancelled`로 바꾸고 thread를 지운다. 늦게 끝난 결과는 반영 노드가 상태를 보고 버린다.
-- shortcut: 연속 10분 실행 뒤 자동 일시정지는 없다, 업데이트가 길어지면 넣는다.
+- **실패** (SFR-043): 처리 함수가 예외를 내거나 회수 루프가 오래 `running`인 작업을 끝내면, `notebook`의 `@on_failure("course_update")`가 진행 중인 `note_updates`를 `failed`로 바꾸고 그 thread를 지운다. `failed`는 `note_updates_one_open`에서 빠지므로 새 업데이트를 시작할 수 있다. 재시도는 새 `note_updates` 행, 곧 새 thread로 처음부터 한다.
+- shortcut: 연속 10분 실행 뒤 자동 일시정지가 없어서 30분 넘게 걸리는 정상 업데이트도 회수 루프가 `stalled`로 끝낸다, 업데이트가 길어지면 자동 일시정지를 넣는다.
 
 ### MVP Q&A 흐름
 
@@ -107,7 +114,7 @@ flowchart TB
   CTX --> AN{① 질문 분석<br/>답할 길 · 개념 목록에서 관련 개념}
   AN -- 노트로 답함 --> ANS[④ 답변 생성<br/>관련 개념의 이해 상태로 설명 수준 결정, 스트리밍]
   AN -- 노트 밖 · 웹 검색 도구 허용 --> ANS
-  AN -- 질문이 모호 --> CLR[확인 질문 생성]
+  AN -- 질문이 모호 · 근거를 찾지 못함 --> CLR[확인 질문 생성]
   AN -- 자료끼리 상충 --> CON[사용자 확인 요청 생성]
   ANS & CLR & CON --> VAL{{출처 검증<br/>입력 ID · 웹 인용 목록}}
   VAL --> SAVE[답변 저장 · answer_status · answer_kind]
@@ -121,7 +128,9 @@ flowchart TB
 - **맥락**: 과목 노트, 그 과목에서 녹음 중인 강의의 확정 전사 구간(최근 구간부터 4k까지), 최근 대화, 과목의 개념 목록(이름·이해 상태)을 넣는다(SFR-016 3, SFR-026 1). 전사를 근거로 쓰면 `sources`에 `{segment_id}`를 남기고, 화면의 기준 시각은 인용한 구간 가운데 가장 늦은 시각이다.
 - **예산**: 호출당 입력 16k(PER-004 4). 과목 노트는 시스템·질문·최근 대화·전사·개념 목록이 쓰고 남은 몫을 다 쓴다. 넘으면 최근에 갱신된 블록부터 담고 원래 순서로 다시 정렬하며, `messages.truncated`를 켠다. 호출이 질문 분석·답변 생성 두 번이라 누적 64k에는 닿지 않는다.
 - **개념**: ①은 맥락의 개념 목록 안에서만 관련 개념을 고른다. 이름을 지어내면 DB의 개념과 맞지 않아 이해 상태를 못 읽기 때문이다.
+- **확인 질문** (SFR-016 4): 질문이 모호하거나, 맥락에 근거가 없고 웹 검색도 쓸 수 없으면 ①이 확인 질문으로 보낸다. 웹 검색까지 했는데 근거가 없으면 ④가 근거가 없다고 답변에 표시한다.
 - **상한**: 90초를 넘기면 `answer_status = 'failed'`로 저장하고 본문은 남기지 않는다(SFR-021 3). 출력 토큰 한도에 걸리면 `completed`로 저장하고 `truncated`를 켠다.
+- **시간 예산** (ADR-0022): 답변 단계 90초, 반영·관찰 단계 합계 30초다. `qa_answer` 작업의 AI 호출은 모두 재시도 1회(`ai_client(qa_answer=True)`)이고, timeout은 그 단계에 남은 시간으로 정한다. 합계 120초가 회수 루프의 Q&A 기준(`STALLED_QA` 3분)보다 짧아야 정상 Q&A가 `stalled`로 끝나지 않는다. 30초를 넘기면 반영·학습 상태를 `failed`로 남긴다.
 - **출처 검증**: 입력에 없는 근거 ID와 인용 목록에 없는 URL은 버리고, 답변은 저장한다(ADR-0007).
 - shortcut: 강의가 막 끝나 과목 노트 업데이트가 돌기 전이면 그 강의 내용이 맥락에 없다. 개념 목록이 예산을 크게 차지하면 자른다. 둘 다 문제가 되면 `search_docs`를 넣는다.
 
@@ -132,8 +141,8 @@ flowchart TB
 - **전달**: `enqueue(db, kind, target_id=None, *, user_started=False)`는 `jobs` 행과 `outbox` 행을 부른 쪽의 트랜잭션에 넣고, 커밋 직후 Redis로 보내 `sent_at`을 채운다. 커밋 뒤 보내기 전에 죽으면 회수 루프가 `sent_at IS NULL`인 오래된 행을 다시 보낸다(ADR-0019). 같은 작업이 두 번 와도 워커는 `status = 'queued'`인 작업만 가져가므로 한 번만 돈다.
 - **계정 동시 실행 한도** (PER-003 5, ADR-0022): 사용자가 요청해 시작하는 작업은 `user_started=True`로 등록한다. 이때 `enqueue`가 `users` 행을 잠그고 그 계정의 끝나지 않은 작업을 센다. 사용자가 시작한 작업이 이미 2개이거나, Q&A를 등록하는데 Q&A가 이미 1개 있으면 `ConcurrencyLimit`을 낸다. Q&A 1개는 유니크 인덱스 `jobs_one_qa`도 막는다. 시스템이 이어서 만드는 작업은 `user_started` 없이 등록하고, 한도에 세지 않는다.
 - **회수 루프**: `sweep_once()`가 worker 프로세스 안에서 30초마다 돈다. 한 번 돌 때 보내지 못한 작업 전달을 다시 보내고, 멈춘 작업을 실패로 끝낸다. 여러 사용자의 행을 훑으므로 `SECURITY DEFINER` 함수 `unsent_outbox`·`fail_stalled_jobs`로 한다(ADR-0010).
-- **멈춘 작업**: MVP는 인계를 하지 않는다. 대신 회수 루프가 `running`인 채 오래된 작업(초기값 Q&A 3분, 배경 작업 30분)을 `failed`(`error_code = 'stalled'`)로 끝내고 비용 예약을 푼다. 그러지 않으면 작업이 영원히 `running`으로 남아 계정당 Q&A 1개 한도와 비용 예약을 계속 잡는다. 사용자는 '생성 실패'를 보고 재시도한다(SFR-021 3, SFR-043).
-- **실패 훅**: 작업이 실패로 끝나면(처리 함수의 예외, 회수 루프의 stalled 처리) `platform`이 그 작업 종류에 `@on_failure(kind)`로 등록된 함수를 부른다. 모듈은 거기서 자기 도메인 행(`messages.answer_status`, `notes.status`, `attempts.grade_status`)을 실패로 바꾼다. `platform`은 모듈을 import할 수 없어서 훅으로 한다. 훅이 없으면 `jobs`만 `failed`가 되고 화면에는 계속 '생성 중'이 남아서, 사용자가 '생성 실패'를 보고 재시도할 수 없다. 회수 루프는 결과 저장을 마친 작업도 실패로 끝낼 수 있으므로, 훅은 아직 진행 중인 행만 바꾼다.
+- **멈춘 작업**: MVP는 인계를 하지 않는다. 대신 회수 루프가 `running`인 채 오래된 작업(초기값 Q&A 3분, 배경 작업 30분)을 `failed`(`error_code = 'stalled'`)로 끝내고 비용 예약을 푼다. 그러지 않으면 작업이 영원히 `running`으로 남아 계정당 Q&A 1개 한도와 비용 예약을 계속 잡는다. 사용자는 '생성 실패'를 보고 재시도한다(SFR-021 3, SFR-043). 재시도는 새 `jobs` 행으로 한다(Q&A는 새 답변 메시지). 실패한 행을 다시 `running`으로 바꾸면 늦게 깨어난 워커가 아래 `job_tx`의 확인을 통과한다.
+- **실패 훅**: 작업이 실패로 끝나면(처리 함수의 예외, 회수 루프의 stalled 처리) `platform`이 그 작업 종류에 `@on_failure(kind)`로 등록된 함수를 부른다. 모듈은 거기서 자기 도메인 행(`messages.answer_status`, `notes.status`, `note_updates.status`, `attempts.grade_status`)을 실패로 바꾼다. `platform`은 모듈을 import할 수 없어서 훅으로 한다. 훅이 없으면 `jobs`만 `failed`가 되고 화면에는 계속 '생성 중'이 남아서, 사용자가 '생성 실패'를 보고 재시도할 수 없다. 회수 루프는 결과 저장을 마친 작업도 실패로 끝낼 수 있으므로, 훅은 아직 진행 중인 행만 바꾼다.
 - **늦은 저장 막기**: 처리 함수는 결과를 `job_tx(job)` 안에서 저장한다. `job_tx`는 그 작업이 아직 `running`인지 확인하고, 아니면 `JobNotRunning`을 내서 저장하지 않는다. 다시 실행하는 쪽이 없으므로 이 확인만으로 실패 처리 뒤 깨어난 워커의 저장을 막는다. 인계를 넣을 때는 ADR-0018의 `attempt_no`로 바꾼다.
 - **비용 예약**: AI 호출 전에 `reserve(db, usd, *, provider="openai", job_id=None)`로 예약하고, 호출 뒤에 `settle(db, ledger_id, cost_usd)`로 정산한다. 하루 한도(PER-003 2)를 넘으면 `reserve`가 `BudgetExceeded`를 낸다. `job_id`를 준 예약 가운데 정산하지 못하고 남은 것은 작업을 끝내는 경로(성공, 실패, stalled 처리)가 푼다(`release_job(db, job_id)`). 예약은 날짜가 바뀌어도 한도에 남기 때문이다.
 

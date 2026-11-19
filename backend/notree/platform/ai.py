@@ -4,7 +4,7 @@ from openai import AsyncOpenAI
 
 
 def ai_client(*, timeout: float, qa_answer: bool = False) -> AsyncOpenAI:
-    """재시도는 SDK에만 맡긴다: 배경 작업 2회, Q&A 답변 단계 1회 (ADR-0017).
+    """재시도는 SDK에만 맡긴다: 배경 작업 2회, `qa_answer` 작업의 모든 단계 1회 (ADR-0017, ADR-0022).
 
     timeout(초)에 기본값이 없는 건 SDK 기본값이 10분이라서다. 작업 마감까지 남은 시간 안에서 부르는 쪽이 정한다.
     비용 예약과 정산은 부르는 쪽이 platform/usage.py로 한다.

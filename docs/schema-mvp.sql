@@ -187,13 +187,16 @@ CREATE TABLE note_changes (
   message_id bigint REFERENCES messages ON DELETE SET NULL,      -- 대화를 지워도 반영 기록은 남는다
   note_update_id bigint REFERENCES note_updates ON DELETE SET NULL,   -- 과목 노트 업데이트가 사용자 확인을 기다리는 의미 충돌 (SFR-008 4)
   block_id   uuid REFERENCES note_blocks ON DELETE SET NULL,     -- 대상 블록. 추가면 반영 뒤 새 블록
+  base_revision int,                                             -- 판단할 때 본 대상 블록의 revision. 추가면 NULL. 반영 순간 다르면 held (QUR-002)
   op         text NOT NULL CHECK (op IN ('add', 'modify', 'supplement', 'delete')),
   proposal   jsonb NOT NULL,
-  status     text NOT NULL CHECK (status IN ('pending', 'applied', 'rejected', 'reverted', 'held')),   -- pending = 확인 필요
+  -- pending = 확인 필요, accepted = 사용자가 수락했고 재개 작업이 반영할 차례(과목 노트 업데이트의 의미 충돌만)
+  status     text NOT NULL CHECK (status IN ('pending', 'accepted', 'applied', 'rejected', 'reverted', 'held')),
   reason     text CHECK (char_length(reason) <= 300),
   applied_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CHECK ((status IN ('applied', 'reverted')) = (applied_at IS NOT NULL))
+  CHECK ((status IN ('applied', 'reverted')) = (applied_at IS NOT NULL)),
+  CHECK (status <> 'accepted' OR note_update_id IS NOT NULL)
 );
 CREATE INDEX note_changes_note ON note_changes (note_id, created_at);
 CREATE INDEX note_changes_message ON note_changes (message_id) WHERE message_id IS NOT NULL;
@@ -300,11 +303,12 @@ CREATE TABLE jobs (
   user_id     bigint NOT NULL REFERENCES users ON DELETE CASCADE,
   -- final_note: 강의 최종 노트 생성 (SFR-007)
   -- course_update: 과목 노트 업데이트 시작·재개 (SFR-008). target_id = note_updates.id
+  -- live_summary: 녹음 중 실시간 요약 (SFR-006). 결과는 DB에 저장하지 않는다(SFR-006 6). target_id = lectures.id
   -- qa_answer: Q&A 답변 → 노트 반영 → 관찰 단계 (ADR-0022)
   -- generate_card: 복습 카드 출제 (SFR-034)
   -- grade: 답안 채점과 관찰 추가 (SFR-035)
   -- purge: 보관 기간이 지난 데이터 영구 삭제
-  kind        text NOT NULL CHECK (kind IN ('final_note', 'course_update', 'qa_answer',
+  kind        text NOT NULL CHECK (kind IN ('final_note', 'course_update', 'live_summary', 'qa_answer',
                                             'generate_card', 'grade', 'purge')),
   status      text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
   target_id   bigint,                           -- kind에 따라 강의·노트·메시지·답안 ID
@@ -477,6 +481,7 @@ COMMENT ON COLUMN note_changes.note_id IS '노트 ID';
 COMMENT ON COLUMN note_changes.message_id IS '메시지 ID';
 COMMENT ON COLUMN note_changes.note_update_id IS '과목 노트 업데이트 ID';
 COMMENT ON COLUMN note_changes.block_id IS '대상 블록 ID';
+COMMENT ON COLUMN note_changes.base_revision IS '기준 판 번호';
 COMMENT ON COLUMN note_changes.op IS '변경 종류';
 COMMENT ON COLUMN note_changes.proposal IS '변경 내용';
 COMMENT ON COLUMN note_changes.status IS '처리 상태';
