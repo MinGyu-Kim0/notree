@@ -9,6 +9,8 @@ dependencies = [
     "psycopg[binary]>=3.3.9",
     "sqlalchemy[asyncio]>=2.1.9",
     "taskiq[reload]>=0.13.0",
+    "redis>=8.1.0",
+    "openai>=3.55.1",
 ]
 
 [dependency-groups]
@@ -33,7 +35,8 @@ name = "모듈 의존 방향"
 type = "layers"
 containers = ["notree"]
 layers = [
-    "capture | tutor | review | account",
+    "tutor | review | account",
     "notebook | learner",
+    "capture",
     "platform",
 ]

@@ -1288,6 +1288,19 @@
           "relType": null
         },
         {
+          "_id": "LQhCatXTQjBJWzinx",
+          "name": "질문 메시지 ID",
+          "pName": "question_id",
+          "domain": "",
+          "type": "bigint",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": "4uAg7ezkY377BbPfH",
+          "relFieldId": "GZLtxyfrJFL5QzrqG",
+          "relType": "ZERO_OR_ONE_OR_MANY"
+        },
+        {
           "_id": "kbz8sg4XK7Q3intdu",
           "name": "본문",
           "pName": "content",
@@ -1414,7 +1427,7 @@
       "name": "노트 변경안",
       "position": {
         "x": 2110,
-        "y": 1048
+        "y": 1080
       },
       "keys": {
         "pks": [
@@ -1668,6 +1681,19 @@
           "domain": "",
           "type": "text",
           "defaultValue": "",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "Q9iF2H2hi7zcn7Ds9",
+          "name": "근거",
+          "pName": "sources",
+          "domain": "",
+          "type": "jsonb",
+          "defaultValue": "'[]'",
           "isAllowNull": false,
           "comment": "",
           "relEntity": null,
@@ -2506,6 +2532,19 @@
           "relType": null
         },
         {
+          "_id": "Q2o4EhDXR8cvMyCwp",
+          "name": "사용자 시작 여부",
+          "pName": "user_started",
+          "domain": "",
+          "type": "boolean",
+          "defaultValue": "false",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
           "_id": "vdzkMavY7hEPyQdag",
           "name": "시도 횟수",
           "pName": "attempt",
@@ -2593,7 +2632,7 @@
       "name": "보낼 작업",
       "position": {
         "x": 100,
-        "y": 1474
+        "y": 1506
       },
       "keys": {
         "pks": [
@@ -2676,7 +2715,7 @@
       "name": "비용 장부",
       "position": {
         "x": 100,
-        "y": 1804
+        "y": 1836
       },
       "keys": {
         "pks": [
@@ -2809,7 +2848,7 @@
   "shapeData": [],
   "connectorData": [],
   "domainData": [],
-  "createdAt": "2026-11-18T23:34:42.256Z",
+  "createdAt": "2026-11-19T00:42:56.732Z",
   "creatorName": "",
   "creatorThumb": ""
 }

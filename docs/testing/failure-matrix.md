@@ -2,6 +2,7 @@
 
 - 근거: [ADR-0017](../adr/0017-taskiq-delivery-sdk-retries.md)~[ADR-0019](../adr/0019-outbox-and-ack-after-commit.md), [ADR-0005](../adr/0005-sse-for-events-websocket-for-recording.md), [ADR-0006](../adr/0006-commit-time-evidence-check.md), [ADR-0007](../adr/0007-block-revisions-and-note-versions.md), [ADR-0022](../adr/0022-qa-followup-stages-in-one-job.md), [architecture.md](../architecture.md) 4·5장
 - 상태: **전 항목 미실행**. 시험 설계이며 자동화 코드나 통과 결과가 아니다.
+- 지금 단계(MVP)와의 차이: 작업 인계, 실행 시도 번호, Redis lease, 완료 이벤트 outbox는 아직 없다([schema-mvp.md](../schema-mvp.md) '작업 전달과 멈춘 작업'). 이 장치를 전제한 시나리오(F-03, F-05 등)는 장치를 넣을 때 돌린다. 그 전까지 워커가 죽은 작업의 기준은 회수 루프가 `failed`(`stalled`)로 끝내고 예약을 풀며, 늦게 깨어난 워커의 저장이 거절되는 것이다.
 - 출처: 팀원 grilling 결과(2026-11-17)의 시험 계획을 2026-11-18 확정안(DB 실행 시도 번호 + Redis lease, 체크포인터 없음, SDK 재시도, outbox 테이블)에 맞게 고쳤다.
 
 ## 시험 조건과 기록

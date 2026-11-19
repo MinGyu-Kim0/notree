@@ -1,7 +1,7 @@
 # Notree 시스템 아키텍처
 
 - 기준 문서: 요구사항 정의서 v0.4.4 (Google Sheet `notree-요구사항-정의서-v0.4`)
-- 작성일: 2026-11-16, 개정: 2026-11-18 (큐·워커 실행 규칙 ADR-0017~0019, 편집기 ADR-0020, 모듈 의존 단방향화, Q&A 후속 단계와 계정 한도 적용 대상 ADR-0022)
+- 작성일: 2026-11-16, 개정: 2026-11-18 (큐·워커 실행 규칙 ADR-0017~0019, 편집기 ADR-0020, 모듈 의존 단방향화, Q&A 후속 단계와 계정 한도 적용 대상 ADR-0022), 2026-11-19 (`capture`를 `notebook`·`learner` 아래 층으로 ADR-0024, F5 출제 앞단, 추적표 '지금 단계' 열)
 - 상태: 설계 합의안. 구현과 측정은 하지 않았다.
 - 용어는 [GLOSSARY.md](../GLOSSARY.md)를, 결정 이유는 [docs/adr/](adr/)를 따른다.
 
@@ -79,30 +79,49 @@ flowchart TB
 
 ## 3. 모듈
 
-하나의 코드베이스(`backend/notree/<모듈>`)를 도메인 모듈로 나눈다. 모듈끼리는 서로의 공개 함수를 직접 호출하고, 오래 걸리는 일은 작업으로 넘긴다. 의존은 아래 그림의 방향으로만 한다. 거꾸로 알려야 할 일이 생기면 호출하지 말고 작업을 등록한다.
+하나의 코드베이스(`backend/notree/<모듈>`)를 도메인 모듈로 나눈다. 모듈끼리는 서로의 공개 함수를 직접 호출하고, 오래 걸리는 일은 작업으로 넘긴다. 의존은 아래 그림의 방향으로만 한다. 같은 층끼리나 거꾸로 알려야 할 일이 생기면 호출하지 말고 작업을 등록한다.
 
 | 모듈 | 책임 | 담당 |
 |---|---|---|
-| `capture` | 과목 맥락 버전, 강의, 녹음 세션, STT 세션, 전사(STT 원본·정정 버전), 수정 제안, 음성 | 김민규 |
+| `capture` | 과목과 맥락 버전, 강의, 녹음 세션, STT 세션, 전사(STT 원본·정정 버전), 수정 제안, 음성 | 김민규 |
 | `notebook` | 강의 노트, 과목 노트, 블록 리비전과 노트 버전, 변경안(`note_changes`) 적용·대기 해소·되돌리기, 출처 표시 상태, 검색, 내보내기 | 이근욱 |
 | `tutor` | 대화, Q&A 답변, 노트 반영 판단(변경안을 `notebook`에 제출), 보강 블록 내용 | 이근욱 · 임서연 |
-| `learner` | 관찰, 관찰 대체, 이해 상태 재계산 | 임서연 |
+| `learner` | 개념, 관찰, 관찰 대체, 이해 상태 재계산 | 임서연 |
 | `review` | 복습 단위, 복습 문제, 답안, 채점과 재평가, FSRS 일정과 재계산, 추천, 메일·캘린더 | 임서연 |
 | `account` | Google 로그인, 서버 세션, 동의 기록, 탈퇴, 계정 용량 | 김민규 |
 | `platform` | 작업 큐, 반영 확인, 비용 예약, 삭제 묶음과 삭제 기록, RLS 세션, 이벤트 발행, 객체 저장소, 로그 필터 | 공통 |
 
 ```mermaid
-flowchart LR
-  capture --> notebook
-  tutor --> notebook
-  tutor --> learner
-  review --> learner
-  review --> notebook
-  capture & notebook & tutor & learner & review & account --> platform
+flowchart TB
+  subgraph L1[" "]
+    direction LR
+    tutor
+    review
+    account
+  end
+  subgraph L2[" "]
+    direction LR
+    notebook
+    learner
+  end
+  subgraph L3[" "]
+    capture
+  end
+  subgraph L4[" "]
+    platform
+  end
+  L1 --> L2
+  L1 --> L3
+  L1 --> L4
+  L2 --> L3
+  L2 --> L4
+  L3 --> L4
 ```
 
+- 상자 하나가 층 하나다. 화살표는 위층 모듈이 아래층 모듈의 공개 함수를 부를 수 있다는 뜻이고, 바로 아래층이 아니어도 된다. 같은 층끼리, 그리고 아래에서 위로는 부르지 않고 작업 등록(`enqueue`)으로 알린다.
 - 순환을 없애려고 두 가지를 옮겼다(2026-11-18). 변경안은 `notebook`의 데이터다. 과목 노트 업데이트가 끝나면 대기 중인 변경안을 `notebook`이 직접 처리하므로 `tutor`를 부를 일이 없다. 재평가(SFR-027)는 새 채점을 만드는 일이라 `review`가 하고, `learner`에는 관찰 대체와 이해 상태 재계산만 요청한다.
-- 모듈 사이 import 방향은 CI에서 검사한다(예: import-linter).
+- `capture`를 `notebook`·`learner` 아래 층으로 내렸다(2026-11-19, [ADR-0024](adr/0024-capture-below-notebook-learner.md)). 과목·강의·전사는 `capture`의 데이터인데 모든 모듈이 읽어야 해서다. `capture`가 `notebook`을 부르던 호출은 없어졌다. 녹음 세션이 끝나면 `capture`가 `enqueue("final_note", target_id=강의 ID)`로 알리고, `final_note` 처리 함수는 `notebook`에 있으며 전사를 `capture`의 공개 함수로 읽는다. `account`는 계정 용량을 세려고 `capture`를 읽는다.
+- 모듈 사이 import 방향은 `scripts/check.sh`의 `lint-imports`가 검사한다. 계약은 `backend/pyproject.toml`의 `[tool.importlinter]`에 있고, 이 그림과 같은 방향만 허용한다.
 
 ## 4. 핵심 흐름
 
@@ -276,7 +295,7 @@ flowchart TB
 - **화면 연결이 끊겨도** 작업은 계속된다. 재접속하면 SSE가 `Last-Event-ID`부터 다시 보낸다. 이벤트가 이미 잘렸으면 다시 불러오기 신호를 보낸다. 작업이 인계돼 실행 시도 번호가 바뀌면 화면은 이전 시도의 임시 답변을 비운다([ADR-0005](adr/0005-sse-for-events-websocket-for-recording.md)).
 - **노트 반영 적용**은 `notebook`이 한다. `tutor`는 반영 판단 결과를 변경안으로 제출만 한다. 과목 노트 업데이트가 끝나면 `notebook`이 대기 변경안을 직접 처리한다.
 
-### F5. 복습 제출 → 채점 → 이해 상태·일정
+### F5. 개념·복습 문제 출제 → 복습 제출 → 채점 → 이해 상태·일정
 
 ```mermaid
 sequenceDiagram
@@ -284,6 +303,15 @@ sequenceDiagram
   participant A as api
   participant P as postgres
   participant K as worker
+  participant CL as OpenAI
+  Note over P,CL: 출제 (과목 노트 업데이트가 완료될 때)
+  K->>P: 과목 노트 업데이트 완료 + jobs(출제, 과목 노트 ID) + outbox 추가
+  K->>P: 출제 작업이 과목 노트 블록 읽기
+  K->>CL: 블록에서 개념 추출, 개념마다 문제·정답·평가 기준 생성
+  CL-->>K: 개념, 문제, 근거 블록 ID
+  K->>K: 근거 블록 ID가 입력 안에 있는지 검증
+  K->>P: 개념 UPSERT(과목, 정규화 이름) + 복습 문제 저장(근거 블록 ID와 판 번호)
+  Note over B,K: 복습 (답안 제출부터)
   B->>A: 답안 초안 자동 저장(입력 2초 뒤, 포커스 이탈)
   B->>A: 제출(힌트·정답 보기 기록)
   A->>P: 답안 원문 보관(바꾸지 않음) + jobs(채점)
@@ -292,6 +320,7 @@ sequenceDiagram
   K-->>B: SSE 평가 완료·보류
 ```
 
+- **개념과 출제** (SFR-028~034): 과목 노트 업데이트가 완료되면 `notebook`이 출제 작업을 등록한다(MVP 스키마의 `generate_card`, 대상은 과목 노트). `notebook`은 위층인 `review`를 부를 수 없어서 작업으로 알린다(3절). `review`의 처리 함수가 과목 노트 블록을 `notebook`의 공개 함수로 읽고, 블록에서 뽑은 개념을 `learner`의 공개 함수로 과목 안의 정규화 이름에 UPSERT한 뒤([ADR-0015](adr/0015-per-course-concepts.md)), 개념마다 복습 문제를 만든다. 문제의 근거는 블록 ID와 인용한 판 번호다. 개념은 이 작업에서 생긴다. Q&A는 개념을 만들지 않고 있는 목록에서만 고른다(F4). 개념 추출과 출제를 한 호출로 할지, 어떤 블록과 개념을 고를지는 `review`에서 정한다.
 - **도래**: 별도 작업 없이 `예정 시각 <= 지금` 조회로 목록에 나온다. 지연이 0이라 PER-005가 충족된다.
 - **같은 답안 재처리**: 멱등 키를 둬서 한 번만 반영한다(SFR-036 2). 같은 개념에 답안이 동시에 들어오면 복습 단위 행을 잠그고 순서대로 처리한다.
 - **재평가** (SFR-027, `review`): 보관한 답안을 다시 채점해 새 `GRADING`을 만들고 이전 평가를 '대체됨'으로 표시한다. 그 복습 단위의 유효한 `review_logs`를 시간순으로 다시 적용해 FSRS 상태를 재계산한다. FSRS는 고정 버전이고 무작위 분산이 없어(SFR-032) 결과가 결정적이다. 새 예정 시각이 이미 지났으면 바로 도래한다. 이해 상태는 `learner`가 유효한 관찰로 다시 계산한다.
@@ -398,98 +427,100 @@ erDiagram
 
 흐름 F1~F7은 4장, 패턴은 5장을 가리킨다. [후속] 항목은 구조상 들어갈 자리만 표시한다.
 
-| ID | 모듈·구성 요소 | 흐름·패턴 |
-|---|---|---|
-| SFR-001 | capture · 맥락 버전 | F1 (세션 시작 시 고정), F2 |
-| SFR-002 | capture · realtime | F1 |
-| SFR-003 | capture · realtime | F1 (의도적 정지 기록, 5분 규칙 제외) |
-| SFR-004 | capture · realtime | F1 (발화 단위 저장, 중복 가능, 저장 지연) |
-| SFR-005 | capture · realtime [후속] | F1 (언어 설정만 추가) |
-| SFR-006 | notebook · worker | F1 |
-| SFR-007 | notebook · worker | F3, 반영 확인 |
-| SFR-008 | notebook · worker(LangGraph) | F3, 작업 재개, 실행 권한 |
-| SFR-009 | notebook · api | 6장 블록 리비전, 보호 블록 |
-| SFR-010 | notebook | 6장 노트 버전, 출처 숨은 속성 |
-| SFR-011 | notebook · api | 6장, 전사 위치 이동 |
-| SFR-012 | notebook [후속] | 반영 확인(출처 제외) |
-| SFR-013 | platform · account | F6, 삭제 묶음 |
-| SFR-014 | notebook · api | 6장 노트 버전 → Markdown |
-| SFR-015 | notebook · worker | F3 (재작성 = 새 버전) |
-| SFR-016 | tutor · worker | F4, 반영 확인(답변은 '근거 변경됨') |
-| SFR-017 | tutor | F4 |
-| SFR-018 | tutor | F4, 출처 검증 |
-| SFR-019 | tutor · notebook | F4 (블록 ID 지정) |
-| SFR-020 | tutor · notebook | F4 (대기 20개, 적용은 notebook), 반영 확인 |
-| SFR-021 | tutor · api | F4 (단계별 완료 표시), 작업 재개, 이벤트 |
-| SFR-022 | notebook | F3 (강의·과목 노트 재생성 모두 `note_changes`), 6장 작성 주체 |
-| SFR-023 | platform · worker | F4 (검색 자료 갱신 작업) |
-| SFR-024 | learner | F4, F5 |
-| SFR-025 | learner | F5 |
-| SFR-026 | learner · tutor | F4, F5 |
-| SFR-027 | review · learner | F5 (재평가·FSRS 재계산), 6장 GRADING |
-| SFR-028 | review | F5 |
-| SFR-029 | review | F5 |
-| SFR-030 | review | F5 |
-| SFR-031 | review | F5 |
-| SFR-032 | review | F5 (FSRS 고정 버전) |
-| SFR-033 | review | F5 |
-| SFR-034 | review · worker | 반영 확인 |
-| SFR-035 | review · worker | F5, 반영 확인 |
-| SFR-036 | review | F5 (멱등 키, 행 잠금) |
-| SFR-037 | review | F5 (절대 시각 저장, KST 표시) |
-| SFR-038 | review · cron · SES | F5 (도래 조회), 2장 cron |
-| SFR-039 | review | F5 |
-| SFR-040 | review | F5 |
-| SFR-041 | review · worker | 반영 확인 |
-| SFR-042 | review | F5 |
-| SFR-043 | platform | 작업 등록, 작업 재개(과목 노트·Q&A), 재시도 |
-| SFR-044 | account · api · realtime | 세션 철회 |
-| SFR-045 | account | F6 (탈퇴), 삭제 기록 |
-| SFR-046 | capture | F2, F3 (정정 버전, 용어 후보, STT 원본 7일 뒤 삭제) |
-| SFR-047 | notebook | 6장 pg_bigm·pgvector, ADR-0016 |
-| SFR-048 | platform · account | F6 |
-| SFR-049 | notebook | F4 (되돌리기는 notebook), 6장 블록 리비전 |
-| SFR-050 | tutor · frontend | 6장 보강 블록, 안전한 표시 |
-| SFR-051 | tutor [후속] | — |
-| SFR-052 | review · api | F5 (초안 자동 저장) |
-| SFR-053 | review | F5 |
-| SFR-054 | capture [후속] | F3 (같은 노트 생성 흐름) |
-| SFR-055 | review [후속] | — |
-| SFR-056 | review [후속] | — |
-| SFR-057 | capture [후속] | 번역문은 근거에서 제외 |
-| SFR-058 | capture · notebook | F3 (수정 제안) |
-| DAR-001 | capture · realtime · S3 | F1, 7장 버킷 |
-| DAR-002 | notebook · capture | 6장 버전 계열 |
-| DAR-003 | learner | 6장 바꾸지 않는 기록 |
-| DAR-004 | review | 6장 ATTEMPT·GRADING |
-| DAR-005 | platform · notebook | 반영 확인(사용 시점 재확인) |
-| DAR-006 | platform | F6, 삭제 묶음 |
-| DAR-007 | postgres · S3 · cron | F7 |
-| SER-001 | platform | 원문 보호 |
-| SER-002 | platform · postgres | 사용자 경계(RLS) |
-| SER-003 | platform | 원문 보호, 1장 |
-| SER-004 | web | 2장 HTTPS, 7장 |
-| QUR-001 | evals | 8장, 출처 검증(웹 근거는 인용 목록) |
-| QUR-002 | notebook · platform | F3 (DB 잠금 60초), 실행 권한, 반영 확인 |
-| QUR-003 | realtime | F1 재연결 |
-| QUR-004 | platform | 작업 등록, 실행 권한, 작업 재개, 재시도(호출당 4회 안) |
-| QUR-005 | frontend | 8장 지원 환경 시험 |
-| QUR-006 | evals | 8장 |
-| QUR-007 | platform | 6장 운영 테이블, 원문 보호 |
-| QUR-008 | frontend · realtime | F1 (브라우저 버퍼) |
-| PER-001 | realtime | 8장 성능 측정 |
-| PER-002 | worker | 8장 성능 측정 |
-| PER-003 | platform | 비용 예약(작업 종료 때 정산·반환), 2장 동시 실행 한도(사용자가 시작한 작업, ADR-0022) |
-| PER-004 | tutor | F4 (호출당 입력 16k, 답변 단계 누적 64k·90초), 8장 |
-| PER-005 | review | F5 (조회 기반 도래) |
-| SIR-001 | capture · realtime | F1 재연결 |
-| SIR-002 | platform · worker | 재시도(SDK가 `Retry-After` 준수) |
-| SIR-003 | account [후속] | — |
-| COR-001 | 전체 | 2장, 7장 |
-| COR-002 | 전체 | 2장, ADR-0001·0005·0009 |
-| COR-003 | web · deploy | 7장, ADR-0004 |
-| COR-004 | capture · account | F1 이전 동의 확인 |
-| COR-005 | account | 1장 위탁 고지 |
+'지금 단계' 열은 그 요구사항을 지금 단계(`AGENTS.md`의 '지금 단계: MVP', 곧 `docs/schema-mvp.sql` 기준의 프로토타입)에서 만드는지를 `포함`, `축소: 빠지는 것`, `제외`, `미정: 이유` 가운데 하나로 적는다. 요구사항 비고의 `[MVP]`는 출시 범위라서 뜻이 다르고, `[MVP]`인 요구사항도 이 열에서는 `축소`나 `제외`일 수 있다. `미정`은 문서(`docs/schema-mvp.sql`, [schema-mvp.md](schema-mvp.md), [README.md](../README.md))로 판정할 수 없는 것이라 만들기 전에 사람에게 묻는다.
+
+| ID | 모듈·구성 요소 | 흐름·패턴 | 지금 단계 |
+|---|---|---|---|
+| SFR-001 | capture · 맥락 버전 | F1 (세션 시작 시 고정), F2 | 축소: 맥락 버전 이력(`recordings.context` 고정본만) |
+| SFR-002 | capture · realtime | F1 | 축소: '부분 완료' 상태와 STT 예약 시간(스키마에 없음) |
+| SFR-003 | capture · realtime | F1 (의도적 정지 기록, 5분 규칙 제외) | 축소: 정지 구간 기록 |
+| SFR-004 | capture · realtime | F1 (발화 단위 저장, 중복 가능, 저장 지연) | 축소: '중복 가능'·'저장 지연'·누락 구간 표시(열 없음) |
+| SFR-005 | capture · realtime [후속] | F1 (언어 설정만 추가) | 제외 |
+| SFR-006 | notebook · worker | F1 | 미정: `jobs.kind`에 `live_summary`가 없는데 '뺀 것' 표에도 없다 |
+| SFR-007 | notebook · worker | F3, 반영 확인 | 축소: 노트 버전(블록 이력만) |
+| SFR-008 | notebook · worker(LangGraph) | F3, 작업 재개, 실행 권한 | 축소: 연속 10분 실행 뒤 자동 일시정지(비고) |
+| SFR-009 | notebook · api | 6장 블록 리비전, 보호 블록 | 포함 |
+| SFR-010 | notebook | 6장 노트 버전, 출처 숨은 속성 | 축소: 노트 전체를 이전 판으로 복원(5) |
+| SFR-011 | notebook · api | 6장, 전사 위치 이동 | 포함 |
+| SFR-012 | notebook [후속] | 반영 확인(출처 제외) | 제외 |
+| SFR-013 | platform · account | F6, 삭제 묶음 | 축소: 삭제 범위 확인, 삭제 묶음(`deleted_at`만) |
+| SFR-014 | notebook · api | 6장 노트 버전 → Markdown | 미정: 스키마와 MVP 문서에 내보내기가 나오지 않는다 |
+| SFR-015 | notebook · worker | F3 (재작성 = 새 버전) | 축소: 이전 완료본의 버전 보존(블록 이력만) |
+| SFR-016 | tutor · worker | F4, 반영 확인(답변은 '근거 변경됨') | 축소: 노트·전사 검색(과목 노트를 통째로 넣는다) |
+| SFR-017 | tutor | F4 | 포함 |
+| SFR-018 | tutor | F4, 출처 검증 | 포함 |
+| SFR-019 | tutor · notebook | F4 (블록 ID 지정) | 포함 |
+| SFR-020 | tutor · notebook | F4 (대기 20개, 적용은 notebook), 반영 확인 | 축소: 대기 뒤 재판단(5·7, `note_changes.status`에 대기 값 없음) |
+| SFR-021 | tutor · api | F4 (단계별 완료 표시), 작업 재개, 이벤트 | 포함 |
+| SFR-022 | notebook | F3 (강의·과목 노트 재생성 모두 `note_changes`), 6장 작성 주체 | 포함 |
+| SFR-023 | platform · worker | F4 (검색 자료 갱신 작업) | 축소: 검색 자료 갱신(검색이 없다) |
+| SFR-024 | learner | F4, F5 | 포함 |
+| SFR-025 | learner | F5 | 포함 |
+| SFR-026 | learner · tutor | F4, F5 | 포함 |
+| SFR-027 | review · learner | F5 (재평가·FSRS 재계산), 6장 GRADING | 축소: 재평가 이력(새 평가 버전) |
+| SFR-028 | review | F5 | 포함 |
+| SFR-029 | review | F5 | 포함 |
+| SFR-030 | review | F5 | 포함 |
+| SFR-031 | review | F5 | 포함 |
+| SFR-032 | review | F5 (FSRS 고정 버전) | 축소: 복습 단위(`review_cards` 하나가 문제와 일정을 함께 가진다) |
+| SFR-033 | review | F5 | 포함 |
+| SFR-034 | review · worker | F5 (출제), 반영 확인 | 축소: 문제·정답·평가 기준의 버전 |
+| SFR-035 | review · worker | F5, 반영 확인 | 축소: 평가 보류(`attempts.grade_status`에 값 없음) |
+| SFR-036 | review | F5 (멱등 키, 행 잠금) | 포함 |
+| SFR-037 | review | F5 (절대 시각 저장, KST 표시) | 포함 |
+| SFR-038 | review · cron · SES | F5 (도래 조회), 2장 cron | 축소: 메일 알림(설정 열 없음) |
+| SFR-039 | review | F5 | 포함 |
+| SFR-040 | review | F5 | 축소: 신규·복습 개수 설정(`users.daily_minutes`만) |
+| SFR-041 | review · worker | 반영 확인 | 축소: 문제 재생성 이력 |
+| SFR-042 | review | F5 | 포함 |
+| SFR-043 | platform | 작업 등록, 작업 재개(과목 노트·Q&A), 재시도 | 포함 |
+| SFR-044 | account · api · realtime | 세션 철회 | 포함 |
+| SFR-045 | account | F6 (탈퇴), 삭제 기록 | 축소: 삭제 기록(5, DAR-007과 함께 뺀다) |
+| SFR-046 | capture | F2, F3 (정정 버전, 용어 후보, STT 원본 7일 뒤 삭제) | 축소: 정정 이력·되돌리기, 녹음 중 용어 적용(3), 재전사(5) |
+| SFR-047 | notebook | 6장 pg_bigm·pgvector, ADR-0016 | 제외 |
+| SFR-048 | platform · account | F6 | 축소: 삭제 묶음 단위 복원(`deleted_at`만) |
+| SFR-049 | notebook | F4 (되돌리기는 notebook), 6장 블록 리비전 | 포함 |
+| SFR-050 | tutor · frontend | 6장 보강 블록, 안전한 표시 | 포함 |
+| SFR-051 | tutor [후속] | — | 제외 |
+| SFR-052 | review · api | F5 (초안 자동 저장) | 축소: 답안 초안 자동 저장 |
+| SFR-053 | review | F5 | 포함 |
+| SFR-054 | capture [후속] | F3 (같은 노트 생성 흐름) | 제외 |
+| SFR-055 | review [후속] | — | 제외 |
+| SFR-056 | review [후속] | — | 제외 |
+| SFR-057 | capture [후속] | 번역문은 근거에서 제외 | 제외 |
+| SFR-058 | capture · notebook | F3 (수정 제안) | 제외 |
+| DAR-001 | capture · realtime · S3 | F1, 7장 버킷 | 축소: 음성 조각 기록(`recordings.audio_bytes`·`audio_expires_at`만) |
+| DAR-002 | notebook · capture | 6장 버전 계열 | 축소: 노트 버전, 전사 정정 이력 |
+| DAR-003 | learner | 6장 바꾸지 않는 기록 | 축소: 재평가 때 '대체됨' 표시 |
+| DAR-004 | review | 6장 ATTEMPT·GRADING | 축소: 문제·평가 기준 버전, 재평가 이력 |
+| DAR-005 | platform · notebook | 반영 확인(사용 시점 재확인) | 축소: 검색 자료(근거는 판 번호 비교로 확인한다) |
+| DAR-006 | platform | F6, 삭제 묶음 | 축소: 삭제 묶음(`deleted_at`과 부모 경유 조회만) |
+| DAR-007 | postgres · S3 · cron | F7 | 제외 |
+| SER-001 | platform | 원문 보호 | 포함 |
+| SER-002 | platform · postgres | 사용자 경계(RLS) | 포함 |
+| SER-003 | platform | 원문 보호, 1장 | 포함 |
+| SER-004 | web | 2장 HTTPS, 7장 | 미정: 운영 배포(HTTPS)를 지금 하는지 문서에 없다 |
+| QUR-001 | evals | 8장, 출처 검증(웹 근거는 인용 목록) | 미정: `evals/`와 평가 세트를 지금 만드는지 문서에 없다 |
+| QUR-002 | notebook · platform | F3 (DB 잠금 60초), 실행 권한, 반영 확인 | 축소: 비정상 종료 뒤 60초 안 잠금 해제(3) |
+| QUR-003 | realtime | F1 재연결 | 축소: 중지 주체·원인 기록, 누락 구간 표시(열 없음) |
+| QUR-004 | platform | 작업 등록, 실행 권한, 작업 재개, 재시도(호출당 4회 안) | 축소: 작업 인계(멈춘 작업은 실패로 끝낸다) |
+| QUR-005 | frontend | 8장 지원 환경 시험 | 미정: 지원 환경 시험을 지금 하는지 문서에 없다 |
+| QUR-006 | evals | 8장 | 미정: 평가를 지금 하는지 문서에 없다 |
+| QUR-007 | platform | 6장 운영 테이블, 원문 보호 | 축소: 작업 단계 기록(`job_stages`) |
+| QUR-008 | frontend · realtime | F1 (브라우저 버퍼) | 축소: 누락 구간 표시(열 없음) |
+| PER-001 | realtime | 8장 성능 측정 | 미정: 성능 측정을 지금 하는지 문서에 없다 |
+| PER-002 | worker | 8장 성능 측정 | 미정: 성능 측정을 지금 하는지 문서에 없다 |
+| PER-003 | platform | 비용 예약(작업 종료 때 정산·반환), 2장 동시 실행 한도(사용자가 시작한 작업, ADR-0022) | 포함 |
+| PER-004 | tutor | F4 (호출당 입력 16k, 답변 단계 누적 64k·90초), 8장 | 미정: 입력 한도와 90초(4)는 지킨다. 응답 시간 측정을 지금 하는지는 문서에 없다 |
+| PER-005 | review | F5 (조회 기반 도래) | 포함 |
+| SIR-001 | capture · realtime | F1 재연결 | 축소: 누락 구간 기록, 재전사(스키마에 없음) |
+| SIR-002 | platform · worker | 재시도(SDK가 `Retry-After` 준수) | 포함 |
+| SIR-003 | account [후속] | — | 제외 |
+| COR-001 | 전체 | 2장, 7장 | 포함 |
+| COR-002 | 전체 | 2장, ADR-0001·0005·0009 | 축소: pgvector·pg_bigm 검색(4) |
+| COR-003 | web · deploy | 7장, ADR-0004 | 미정: 운영 배포를 지금 하는지 문서에 없다 |
+| COR-004 | capture · account | F1 이전 동의 확인 | 포함 |
+| COR-005 | account | 1장 위탁 고지 | 포함 |
 
 ## 10. 미정 수치
 

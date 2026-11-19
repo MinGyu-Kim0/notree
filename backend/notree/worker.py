@@ -4,6 +4,7 @@
 예: import notree.notebook.jobs  # noqa: F401
 """
 
+import notree.platform.sweeper  # noqa: F401  워커가 뜰 때 회수 루프를 시작한다
 from notree.platform.jobs import broker
 
 __all__ = ["broker"]
