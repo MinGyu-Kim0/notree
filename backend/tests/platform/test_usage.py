@@ -57,6 +57,25 @@ async def test_reserve_then_settle(users: tuple[int, int]) -> None:
         await reserve(db, Decimal("0.9"))
 
 
+async def test_reserve_rejects_job_of_another_user(users: tuple[int, int]) -> None:
+    mine, other = users
+    async with user_tx(other) as db:
+        job = Job(user_id=other, kind="grade")
+        db.add(job)
+    try:
+        with pytest.raises(LookupError):
+            async with user_tx(mine) as db:
+                await reserve(db, Decimal("0.1"), job_id=job.id)
+        async with user_tx(mine) as db:  # 예약이 만들어지지 않았다
+            held = "SELECT count(*) FROM usage_ledger WHERE status = 'held'"
+            assert await db.scalar(text(held)) == 0
+        async with user_tx(other) as db:  # 작업 주인은 붙일 수 있다
+            await reserve(db, Decimal("0.1"), job_id=job.id)
+    finally:
+        async with user_tx(other) as db:
+            await db.execute(delete(Job).where(Job.id == job.id))
+
+
 async def test_user_limit(users: tuple[int, int]) -> None:
     user_id, _ = users
     async with user_tx(user_id) as db:

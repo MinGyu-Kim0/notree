@@ -98,7 +98,7 @@ AS $$
     UPDATE usage_ledger u
     SET status = 'released'
     FROM stalled s
-    WHERE u.job_id = s.id AND u.status = 'held'
+    WHERE u.job_id = s.id AND u.user_id = s.user_id AND u.status = 'held'
   )
   SELECT s.id, s.user_id FROM stalled s
 $$;
