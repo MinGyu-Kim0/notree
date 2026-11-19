@@ -25,6 +25,7 @@ class UsageLedger(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int]
     job_id: Mapped[int | None]
+    recording_id: Mapped[int | None]
     provider: Mapped[str]
     utc_date: Mapped[date]
     reserved_usd: Mapped[Decimal]

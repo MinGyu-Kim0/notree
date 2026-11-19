@@ -52,7 +52,7 @@ docker compose -f deploy/compose.yaml exec api pytest
 
 - **`db.py`**: 그 모듈 테이블의 SQLAlchemy 모델과 쿼리 함수. 모델은 매핑만 한다. 테이블의 원본은 `docs/schema-mvp.sql`이고, 둘이 어긋나면 테스트가 잡는다. 다른 모듈의 테이블은 그 모듈 `db.py`의 함수로만 읽는다.
 - **`api.py`**: 라우터. `Depends(current_user_id)`로 사용자를 받고 `async with user_tx(user_id) as db:` 안에서 `db.py`의 함수를 부른다. 라우터는 [backend/notree/api.py](backend/notree/api.py)에 한 줄 더한다.
-- **작업**: `user_tx`나 `job_tx` 안에서 `await enqueue(db, "final_note", target_id=...)`로 등록하고, `@handler("final_note")`를 붙인 함수가 워커에서 처리한다. 처리 함수는 결과를 `async with job_tx(job) as db:` 안에서 저장한다. 작업이 실패했을 때 도메인 상태(`notes.status` 등)를 실패로 바꾸는 일은 `@on_failure("final_note")`를 붙인 함수에 둔다. 두 함수가 든 파일을 [backend/notree/worker.py](backend/notree/worker.py)에서 import한다. 사용자가 눌러 시작하는 작업은 `enqueue(..., user_started=True)`로 등록하고, `ConcurrencyLimit`이 나면 429로 돌려준다.
+- **작업**: `user_tx`나 `job_tx` 안에서 `await enqueue(db, "final_note", target_id=...)`로 등록하고, `@handler("final_note")`를 붙인 함수가 워커에서 처리한다. 처리 함수는 결과를 `async with job_tx(job) as db:` 안에서 저장한다. 작업이 실패했을 때 도메인 상태(`notes.status` 등)를 실패로 바꾸는 일은 `@on_failure("final_note")`를 붙인 함수 `hook(db, job)`에 둔다. 훅은 `jobs`를 `failed`로 바꾸는 트랜잭션 안에서 불리므로 그 `db`로 쓰고, 새 트랜잭션을 열지 않는다. 두 함수가 든 파일을 [backend/notree/worker.py](backend/notree/worker.py)에서 import한다. 사용자가 눌러 시작하는 작업은 `enqueue(..., user_started=True)`로 등록하고, `ConcurrencyLimit`이 나면 429로 돌려준다. 녹음 시작도 계정 한도에 들므로, 녹음을 만드는 트랜잭션에서 `user_started_count(db)`가 `MAX_USER_STARTED` 이상이면 429로 돌려준다.
 
 꼭 지킬 것:
 
