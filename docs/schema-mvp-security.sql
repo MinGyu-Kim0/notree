@@ -69,3 +69,41 @@ ALTER FUNCTION login_user(text, text) OWNER TO notree_admin;
 ALTER FUNCTION global_spend(date) OWNER TO notree_admin;
 REVOKE EXECUTE ON FUNCTION login_user(text, text), global_spend(date) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION login_user(text, text), global_spend(date) TO notree_app;
+
+-- ─── 회수 루프: 여러 사용자의 행을 훑는 함수 (RLS 예외, ADR-0010) ───
+-- 보내지 못한 작업 전달. 회수 루프가 다시 보낸다 (ADR-0019)
+CREATE FUNCTION unsent_outbox(p_older_than interval)
+  RETURNS TABLE (outbox_id bigint, job_id bigint, user_id bigint)
+  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
+AS $$
+  SELECT o.id, o.job_id, o.user_id
+  FROM outbox o
+  WHERE o.sent_at IS NULL AND o.created_at < now() - p_older_than
+  ORDER BY o.created_at
+$$;
+
+-- running인 채 오래된 작업을 실패로 끝내고 비용 예약을 푼다. 인계가 없어서 그대로 두면 계정 한도와 예약을 계속 잡는다.
+-- 끝낸 작업을 돌려주면 회수 루프가 작업마다 실패 훅을 부른다 (schema-mvp.md '작업 전달과 멈춘 작업')
+CREATE FUNCTION fail_stalled_jobs(p_qa interval, p_background interval)
+  RETURNS TABLE (job_id bigint, user_id bigint)
+  LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public
+AS $$
+  WITH stalled AS (
+    UPDATE jobs j
+    SET status = 'failed', error_code = 'stalled', finished_at = now()
+    WHERE j.status = 'running'
+      AND j.started_at < now() - CASE WHEN j.kind = 'qa_answer' THEN p_qa ELSE p_background END
+    RETURNING j.id, j.user_id
+  ), released AS (
+    UPDATE usage_ledger u
+    SET status = 'released'
+    FROM stalled s
+    WHERE u.job_id = s.id AND u.status = 'held'
+  )
+  SELECT s.id, s.user_id FROM stalled s
+$$;
+
+ALTER FUNCTION unsent_outbox(interval) OWNER TO notree_admin;
+ALTER FUNCTION fail_stalled_jobs(interval, interval) OWNER TO notree_admin;
+REVOKE EXECUTE ON FUNCTION unsent_outbox(interval), fail_stalled_jobs(interval, interval) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION unsent_outbox(interval), fail_stalled_jobs(interval, interval) TO notree_app;

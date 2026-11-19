@@ -1,0 +1,274 @@
+"""작업 등록·전달·실패 처리 (docs/schema-mvp.md '작업 전달과 멈춘 작업')."""
+
+import asyncio
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import delete, select, update
+
+from notree.platform.db import user_tx
+from notree.platform.jobs import (
+    ConcurrencyLimit,
+    Job,
+    JobNotRunning,
+    Outbox,
+    enqueue,
+    handler,
+    job_tx,
+    on_failure,
+    run_job,
+)
+from notree.platform.usage import UsageLedger
+from tests.conftest import login
+
+pytestmark = pytest.mark.anyio
+
+
+def fake_kiq(
+    monkeypatch: pytest.MonkeyPatch, *, fail: bool = False
+) -> list[tuple[int, int]]:
+    """큐 전송을 가로채 보낸 인자를 모은다. compose의 워커가 테스트 작업을 가져가 상태를 바꾸지 않게 한다."""
+    sent: list[tuple[int, int]] = []
+
+    async def kiq(job_id: int, user_id: int) -> None:
+        if fail:
+            raise ConnectionError
+        sent.append((job_id, user_id))
+
+    monkeypatch.setattr(run_job, "kiq", kiq)
+    return sent
+
+
+async def delete_jobs(user_id: int) -> None:
+    async with user_tx(user_id) as db:
+        # RLS가 이 사용자의 작업만 지운다. outbox는 CASCADE로 함께 지워진다
+        await db.execute(delete(Job))
+
+
+@pytest.fixture
+async def users() -> AsyncIterator[tuple[int, int]]:
+    """작업이 없는 테스트 사용자 둘. 앞선 실행이 남긴 작업이 한도 계산에 끼지 않게 먼저 지운다."""
+    ids = (await login("test-jobs-a"), await login("test-jobs-b"))
+    for user_id in ids:
+        await delete_jobs(user_id)
+    yield ids
+    for user_id in ids:
+        await delete_jobs(user_id)
+
+
+async def add_job(user_id: int, kind: str, status: str = "queued") -> Job:
+    """enqueue를 거치지 않고 작업 행만 만든다."""
+    async with user_tx(user_id) as db:
+        job = Job(user_id=user_id, kind=kind, status=status)
+        db.add(job)
+    return job
+
+
+async def reload(job: Job) -> Job:
+    async with user_tx(job.user_id) as db:
+        return await db.get_one(Job, job.id)
+
+
+async def outbox_of(job: Job) -> list[Outbox]:
+    async with user_tx(job.user_id) as db:
+        return list(await db.scalars(select(Outbox).where(Outbox.job_id == job.id)))
+
+
+async def test_enqueue_sends_after_commit(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, _ = users
+    sent = fake_kiq(monkeypatch)
+
+    async with user_tx(user_id) as db:
+        job = await enqueue(db, "purge", target_id=7)
+        assert sent == []  # 커밋 전에는 보내지 않는다
+
+    assert sent == [(job.id, user_id)]  # 메시지에는 작업 ID와 user_id만 싣는다
+    assert (job.status, job.target_id, job.user_started) == ("queued", 7, False)
+    [outbox] = await outbox_of(job)
+    assert outbox.sent_at is not None
+
+
+async def test_enqueue_rollback_leaves_nothing(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, _ = users
+    sent = fake_kiq(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        async with user_tx(user_id) as db:
+            job_id = (await enqueue(db, "purge")).id
+            raise RuntimeError
+
+    assert sent == []
+    async with user_tx(user_id) as db:
+        assert await db.get(Job, job_id) is None
+        assert list(await db.scalars(select(Outbox))) == []
+
+
+async def test_enqueue_survives_send_failure(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, _ = users
+    fake_kiq(monkeypatch, fail=True)
+
+    async with user_tx(user_id) as db:
+        job = await enqueue(db, "purge")  # 요청은 커밋됐으므로 예외가 올라오지 않는다
+
+    assert (await reload(job)).status == "queued"
+    [outbox] = await outbox_of(job)
+    assert outbox.sent_at is None  # 회수 루프가 다시 보낼 행
+
+
+async def test_user_started_limit(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, other_id = users
+    fake_kiq(monkeypatch)
+    async with user_tx(other_id) as db:  # 다른 사용자의 작업은 세지 않는다
+        await enqueue(db, "grade", user_started=True)
+        await enqueue(db, "grade", user_started=True)
+    async with user_tx(user_id) as db:
+        await enqueue(db, "final_note")  # 시스템이 만든 작업은 세지 않는다
+        first = await enqueue(db, "grade", user_started=True)
+        await enqueue(db, "grade", user_started=True)
+
+    with pytest.raises(ConcurrencyLimit):
+        async with user_tx(user_id) as db:
+            await enqueue(db, "grade", user_started=True)
+
+    async with user_tx(user_id) as db:  # 끝난 작업은 자리를 내준다
+        await db.execute(
+            update(Job).where(Job.id == first.id).values(status="succeeded")
+        )
+        await enqueue(db, "grade", user_started=True)
+
+
+async def test_concurrent_enqueues_stay_within_limit(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, _ = users
+    fake_kiq(monkeypatch)
+
+    async def try_enqueue() -> bool:
+        try:
+            async with user_tx(user_id) as db:
+                await enqueue(db, "grade", user_started=True)
+        except ConcurrencyLimit:
+            return False
+        return True
+
+    assert sum(await asyncio.gather(*(try_enqueue() for _ in range(5)))) == 2
+
+
+async def test_one_qa_answer_per_user(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, other_id = users
+    fake_kiq(monkeypatch)
+    async with user_tx(other_id) as db:
+        await enqueue(db, "qa_answer", user_started=True)
+    async with user_tx(user_id) as db:
+        await enqueue(db, "qa_answer", user_started=True)
+
+    with pytest.raises(ConcurrencyLimit):
+        async with user_tx(user_id) as db:
+            await enqueue(db, "qa_answer", user_started=True)
+
+
+async def test_job_tx_saves_only_while_running(users: tuple[int, int]) -> None:
+    user_id, _ = users
+    job = await add_job(user_id, "purge", status="running")
+
+    async with job_tx(job) as db:
+        await db.execute(update(Job).where(Job.id == job.id).values(target_id=1))
+    assert (await reload(job)).target_id == 1
+
+    async with user_tx(user_id) as db:  # 회수 루프가 실패로 끝냈다
+        await db.execute(update(Job).where(Job.id == job.id).values(status="failed"))
+    with pytest.raises(JobNotRunning):
+        async with job_tx(job) as db:
+            await db.execute(update(Job).where(Job.id == job.id).values(target_id=2))
+    assert (await reload(job)).target_id == 1
+
+
+async def test_run_job_failure_calls_hook_and_releases_holds(
+    users: tuple[int, int],
+) -> None:
+    user_id, _ = users
+    failed: list[tuple[int, str | None]] = []
+
+    @handler("grade")
+    async def boom(job: Job) -> None:
+        raise ValueError
+
+    @on_failure("grade")
+    async def mark_failed(job: Job) -> None:
+        failed.append((job.id, job.error_code))
+
+    job = await add_job(user_id, "grade")
+    async with user_tx(user_id) as db:
+        hold = UsageLedger(
+            user_id=user_id,
+            job_id=job.id,
+            provider="openai",
+            utc_date=datetime.now(UTC).date(),
+            reserved_usd=Decimal("0.000001"),
+        )
+        db.add(hold)
+
+    await run_job(job.id, user_id)
+
+    done = await reload(job)
+    assert (done.status, done.error_code) == ("failed", "ValueError")
+    assert failed == [(job.id, "ValueError")]
+    async with user_tx(user_id) as db:
+        assert (await db.get_one(UsageLedger, hold.id)).status == "released"
+
+
+async def test_run_job_survives_failing_hook(users: tuple[int, int]) -> None:
+    user_id, _ = users
+
+    @on_failure("generate_card")  # 처리 함수가 없는 종류
+    async def broken_hook(job: Job) -> None:
+        raise RuntimeError
+
+    job = await add_job(user_id, "generate_card")
+    await run_job(job.id, user_id)
+
+    done = await reload(job)
+    assert (done.status, done.error_code) == ("failed", "no_handler")
+
+
+@pytest.mark.parametrize("saves_late", [False, True])
+async def test_run_job_keeps_sweeper_failure(
+    users: tuple[int, int], saves_late: bool
+) -> None:
+    user_id, _ = users
+    hooked: list[int] = []
+
+    @handler("purge")
+    async def slow(job: Job) -> None:
+        async with user_tx(job.user_id) as db:  # 처리 도중 회수 루프가 실패로 끝냈다
+            await db.execute(
+                update(Job)
+                .where(Job.id == job.id)
+                .values(status="failed", error_code="stalled")
+            )
+        if saves_late:
+            async with job_tx(job):
+                pass
+
+    @on_failure("purge")
+    async def hook(job: Job) -> None:
+        hooked.append(job.id)
+
+    job = await add_job(user_id, "purge")
+    await run_job(job.id, user_id)
+
+    done = await reload(job)
+    assert (done.status, done.error_code) == ("failed", "stalled")
+    assert hooked == []  # 훅은 회수 루프가 부른다. 여기서 또 부르지 않는다
