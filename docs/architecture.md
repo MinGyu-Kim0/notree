@@ -203,9 +203,10 @@ sequenceDiagram
   K->>K: 과목 노트 업데이트 그래프(LangGraph, Postgres 체크포인터): 입력 → 배치 → 단원별 병합(Send) → 충돌 분류 → 반영
   K->>P: 과목 노트 편집 잠금(읽기 허용), 노드마다 체크포인트 저장
   alt 의미 충돌 있음
-    K->>P: 충돌을 note_changes(pending)로 저장, note_updates awaiting_user, 잠금 해제 (interrupt, 작업 끝)
+    K->>P: 충돌 저장 노드: 충돌을 note_changes(pending)로 저장(이미 있으면 건너뜀), note_updates awaiting_user, 잠금 해제
+    K->>K: interrupt 노드에서 멈춤(저장 없음, 작업 끝)
     K-->>B: SSE 사용자 확인 필요
-    B->>P: 충돌마다 수락·거절 → 모두 결정하면 jobs(과목 노트 업데이트 재개) + outbox
+    B->>P: 충돌마다 수락(accepted)·거절 → pending이 0개면 jobs(과목 노트 업데이트 재개) + outbox
     K->>K: 같은 thread를 Command(resume)로 이어 감
   end
   K->>P: 반영: 노트 변경 + note_updates completed (한 트랜잭션), thread 삭제
@@ -216,7 +217,7 @@ sequenceDiagram
 ```
 
 - **과목 노트 업데이트** (SFR-008): 과목 노트당 실행 중 1개, 재개 대기 1개, 대기 요청 1개다. 연속 실행 10분이면 일시정지한다. 일시정지하면 중간 결과를 보존하고, 취소하면 세대 번호를 올려 늦은 결과를 버린다. 잠금은 DB `notes.locked_until`이고, 작업이 20초마다 60초 뒤로 연장하므로 비정상 종료돼도 60초 안에 풀린다(QUR-002, [ADR-0018](adr/0018-db-fencing-redis-lease.md)).
-- **재개와 사용자 확인** ([ADR-0023](adr/0023-course-update-checkpointer-and-interrupt.md)): Postgres 체크포인터(`langgraph` 스키마, `thread_id = note_updates.id`)가 노드마다 상태를 저장하고, 일시정지·인계 뒤에는 마지막 체크포인트부터 이어 간다. 단원별 병합은 `Send`로 단원마다 병렬 실행하고, 끝난 단원은 다시 하지 않는다. 의미 충돌(SFR-008 4)은 `note_changes(status='pending', note_update_id)`로 저장하고 `interrupt`로 멈춘다. 사용자가 모두 결정하면 재개 작업이 이어 간다. 부작용은 반영 노드에만 있고, 노트 변경과 `note_updates.status = 'completed'`를 한 트랜잭션으로 커밋해 이중 반영을 막는다.
+- **재개와 사용자 확인** ([ADR-0023](adr/0023-course-update-checkpointer-and-interrupt.md)): Postgres 체크포인터(`langgraph` 스키마, `thread_id = note_updates.id`)가 노드마다 상태를 저장하고, 일시정지·인계 뒤에는 마지막 체크포인트부터 이어 간다. 단원별 병합은 `Send`로 단원마다 병렬 실행하고, 끝난 단원은 다시 하지 않는다. 의미 충돌(SFR-008 4)은 충돌 저장 노드가 `note_changes(status='pending', note_update_id)`로 저장하고, 다음 노드가 `interrupt`로 멈춘다. LangGraph는 재개할 때 `interrupt()`를 부른 노드를 처음부터 다시 실행하므로 그 노드에서는 저장하지 않고, 충돌 저장 노드는 이미 저장된 변경안이 있으면 건너뛴다. 사용자가 모두 결정하면 재개 작업이 이어 가고, 반영 노드가 `accepted`인 변경안을 반영한다. 반영 노드는 노트 변경과 `note_updates.status = 'completed'`를 한 트랜잭션으로 커밋해 이중 반영을 막는다.
 - **단원**: 과목 노트의 최상위 제목 블록과 다음 최상위 제목 앞까지의 블록. 그 제목 블록 ID로 식별한다. 배치 단계에서 LLM이 새 강의 블록마다 기존 단원이나 새 단원을 정하고, 이 계획은 체크포인트에 남는다.
 - **노트 재생성과 사용자 편집** (SFR-022, QUR-002): 강의에 녹음 세션이 추가되거나 수정 제안을 반영해 최종 노트를 다시 만들 때도 과목 노트와 같은 규칙을 쓴다. 사용자가 작성한 블록은 원문 그대로 두고, 사용자가 고친 AI 블록은 충돌로 확인을 요청한다. 처리 결과는 `note_changes`(origin `lecture_regen`)에 남는다.
 - **STT 원본 삭제**: 정정이 확정되고 7일 뒤 `cron`이 그 구간의 STT 원본을 지운다. 블록 근거는 정정 버전으로 옮기고, 원본을 근거로 쓰던 블록은 "갱신 필요"를 유지한다. "출처 삭제됨"으로 처리하지 않는다.
@@ -283,7 +284,7 @@ flowchart TB
   SAVE -- evidence_changed --> END1([끝 · 질문 보존])
 ```
 
-- **판단 지점**: ①·③·⑤·⑥은 LLM이 구조화 출력으로 다음 갈래를 고른다. ⑦은 SFR-020 정책을 코드로 검사한다. 사용자가 작성·편집한 블록이나 사실 충돌은 '확인 필요', 과목 노트 업데이트 중이거나 근거 강의가 미완료면 '대기'다.
+- **판단 지점**: ①·③·⑤·⑥은 LLM이 구조화 출력으로 다음 갈래를 고른다. ⑦은 SFR-020 정책을 코드로 검사한다. 사용자가 작성·편집한 블록이나 노트 내용과 상충하는 변경은 '확인 필요', 과목 노트 업데이트 중이거나 근거 강의가 미완료면 '대기'다.
 - **상한**: 재검색 2회, 위치 결정의 추가 조회 1회. 호출당 입력은 16k다. 답변 단계의 누적 입력 64k·출력 6k·90초(PER-004 4)를 지킨다. 검색 중 누적 입력이 차면 재검색을 멈추고 모은 근거로 ④에 간다. 출력 한도에 걸린 답변은 `completed`로 저장하고 `messages.truncated`를 켠다. 90초를 넘기면 `failed`로 저장하고 본문은 남기지 않는다(SFR-021 3). 반영·관찰 단계는 사용자가 기다리는 구간 밖이라 이 누적 상한에 넣지 않고, 호출마다 timeout과 비용 예약으로 묶는다(PER-004 4 변경안).
 - **저장 범위**: 그래프 상태(검색 후보, 프롬프트, 미완성 답변)는 메모리에만 둔다(SER-001 4). 단계마다 결과와 완료 표시(`messages.answer_status`, `reflect_status`, `learner_status`)를 한 트랜잭션으로 커밋한다. 반영·관찰 단계가 실패해도 답변은 남고, 반영·학습 상태 결과가 각각 실패로 표시된다(SFR-021). 인계·재시도 때는 완료 표시를 보고 남은 단계만 다시 실행한다(5장 작업 재개). 반영·관찰 단계는 `answer_status = 'completed'`일 때만 돈다. 확인 질문과 상충 안내도 출처 검증을 거쳐 완료 답변으로 저장하고 `answer_kind`(`clarification`·`conflict`)로 구분하지만, 노트에 넣을 내용도 학습 증거도 아니므로 두 단계를 건너뛰고 같은 트랜잭션에서 학습 상태를 `not_needed`로 쓴다. 반영 결과는 확인 질문이면 `not_needed`, 상충 안내면 근거 충돌이므로 `held`와 판단 이유(무엇이 상충하는지)다(SFR-017 4).
 - **Q&A 한도 점유**: 반영·관찰 단계가 도는 동안에도 계정당 Q&A 1개 한도를 잡는다. 그동안 다음 질문은 '답변 정리 중'으로 보내기를 막는다(ADR-0022).
@@ -361,7 +362,7 @@ sequenceDiagram
 | 작업 등록 | `jobs` 행과 `outbox` 행을 도메인 변경과 같은 트랜잭션에서 넣는다. 커밋 직후 Taskiq로 보내고(작업 ID만) `sent_at`을 채운다. 회수 루프는 오래된 미전송 outbox만 다시 보낸다. 요청 식별자가 같으면 기존 작업을 돌려준다. ACK는 결과 커밋 뒤에 한다. | [ADR-0017](adr/0017-taskiq-delivery-sdk-retries.md), [ADR-0019](adr/0019-outbox-and-ack-after-commit.md) |
 | 실행 권한 | Redis lease(`NX`, TTL 30초, heartbeat 10초)를 먼저 잡고 DB `jobs.attempt_no`를 올린다. 모든 결과 반영 트랜잭션은 `attempt_no`를 확인한다. Redis가 잃는 것은 중복 호출 비용일 뿐이다. | [ADR-0018](adr/0018-db-fencing-redis-lease.md) |
 | 작업 재개 | Q&A는 단계 결과와 완료 표시(`messages.answer_status`·`reflect_status`·`learner_status`)를 한 트랜잭션으로 커밋하고, 재시도 때 남은 단계부터 한다. 과목 노트 업데이트는 Postgres 체크포인터로 마지막 노드부터 이어 가고, 반영 노드가 `note_updates.status`로 이중 반영을 막는다. 결과 반영 트랜잭션은 `attempt_no`를 확인한다. | [ADR-0022](adr/0022-qa-followup-stages-in-one-job.md), [ADR-0023](adr/0023-course-update-checkpointer-and-interrupt.md), SFR-043 |
-| 재시도 | OpenAI SDK `max_retries`(초기값 배경 작업 2, Q&A 답변 단계 1. 외부 호출 하나당 최대 4회 안, 재시도할 수 없는 오류는 바로 실패). Taskiq 재시도는 쓰지 않는다. 워커 장애 인계는 `attempt_no`가 3을 넘으면 실패로 끝낸다. 호출마다 작업 마감까지 남은 시간 안에서 timeout을 둔다. | [ADR-0017](adr/0017-taskiq-delivery-sdk-retries.md), QUR-004, SIR-002 |
+| 재시도 | OpenAI SDK `max_retries`(초기값 배경 작업 2, `qa_answer` 작업의 모든 단계 1. 외부 호출 하나당 최대 4회 안, 재시도할 수 없는 오류는 바로 실패). Taskiq 재시도는 쓰지 않는다. 워커 장애 인계는 `attempt_no`가 3을 넘으면 실패로 끝낸다. 호출마다 작업 마감까지 남은 시간 안에서 timeout을 둔다. | [ADR-0017](adr/0017-taskiq-delivery-sdk-retries.md), QUR-004, SIR-002 |
 | 이벤트 | 토큰·진행은 사용자별 Redis Stream에 쌓고 SSE로 보낸다. `Last-Event-ID`로 재개한다. 완료·실패·취소는 outbox를 거친다. 이벤트에 작업 ID와 실행 시도 번호를 붙인다. | [ADR-0005](adr/0005-sse-for-events-websocket-for-recording.md) |
 | 비용 예약 | Postgres 예약 장부에 호출 전 예약하고 호출 뒤 정산한다. 작업 등록과 같은 트랜잭션에서 한다. 사용자 하루 1달러, 전체 하루 10달러(UTC). 작업을 끝내는 모든 경로(성공·실패·취소·인계 상한 초과)는 같은 트랜잭션에서 그 작업의 남은 예약을 정산하거나 `released`로 바꾼다. 예약은 날짜가 바뀌어도 한도에 남기 때문이다(PER-003 2). | PER-003 |
 | 삭제 묶음 | 한 번의 삭제에 묶음 ID를 붙인다. 복원은 묶음 단위다. 기한이 여럿이면 가장 이른 기한에 삭제한다. | SFR-013·048, DAR-006 |
@@ -436,9 +437,9 @@ erDiagram
 | SFR-003 | capture · realtime | F1 (의도적 정지 기록, 5분 규칙 제외) | 축소: 정지 구간 기록 |
 | SFR-004 | capture · realtime | F1 (발화 단위 저장, 중복 가능, 저장 지연) | 축소: '중복 가능'·'저장 지연'·누락 구간 표시(열 없음) |
 | SFR-005 | capture · realtime [후속] | F1 (언어 설정만 추가) | 제외 |
-| SFR-006 | notebook · worker | F1 | 미정: `jobs.kind`에 `live_summary`가 없는데 '뺀 것' 표에도 없다 |
+| SFR-006 | notebook · worker | F1 | 포함: `jobs.kind`의 `live_summary`. 결과는 DB에 저장하지 않는다 |
 | SFR-007 | notebook · worker | F3, 반영 확인 | 축소: 노트 버전(블록 이력만) |
-| SFR-008 | notebook · worker(LangGraph) | F3, 작업 재개, 실행 권한 | 축소: 연속 10분 실행 뒤 자동 일시정지(비고) |
+| SFR-008 | notebook · worker(LangGraph) | F3, 작업 재개, 실행 권한 | 축소: 연속 10분 실행 뒤 자동 일시정지(비고), 편집 잠금(5). 잠금 대신 반영 순간 판 번호를 비교한다([schema-mvp.md](schema-mvp.md) '과목 노트 업데이트 흐름') |
 | SFR-009 | notebook · api | 6장 블록 리비전, 보호 블록 | 포함 |
 | SFR-010 | notebook | 6장 노트 버전, 출처 숨은 속성 | 축소: 노트 전체를 이전 판으로 복원(5) |
 | SFR-011 | notebook · api | 6장, 전사 위치 이동 | 포함 |
@@ -501,7 +502,7 @@ erDiagram
 | SER-003 | platform | 원문 보호, 1장 | 포함 |
 | SER-004 | web | 2장 HTTPS, 7장 | 미정: 운영 배포(HTTPS)를 지금 하는지 문서에 없다 |
 | QUR-001 | evals | 8장, 출처 검증(웹 근거는 인용 목록) | 미정: `evals/`와 평가 세트를 지금 만드는지 문서에 없다 |
-| QUR-002 | notebook · platform | F3 (DB 잠금 60초), 실행 권한, 반영 확인 | 축소: 비정상 종료 뒤 60초 안 잠금 해제(3) |
+| QUR-002 | notebook · platform | F3 (DB 잠금 60초), 실행 권한, 반영 확인 | 축소: 편집 잠금(3) 없음. 반영 순간 판 번호를 비교해 다르면 반영하지 않고 보류로 표시한다(1·2) |
 | QUR-003 | realtime | F1 재연결 | 축소: 중지 주체·원인 기록, 누락 구간 표시(열 없음) |
 | QUR-004 | platform | 작업 등록, 실행 권한, 작업 재개, 재시도(호출당 4회 안) | 축소: 작업 인계(멈춘 작업은 실패로 끝낸다) |
 | QUR-005 | frontend | 8장 지원 환경 시험 | 미정: 지원 환경 시험을 지금 하는지 문서에 없다 |

@@ -33,7 +33,7 @@
 - **모듈 의존**: `backend/notree/<모듈>`은 [architecture.md](docs/architecture.md) 3절 그림의 방향으로만 import한다. 다른 모듈은 그 모듈의 공개 함수로 부르고, 같은 층끼리나 거꾸로 알려야 할 일은 작업으로 등록한다.
 - **모듈 코드**: [README.md](README.md)의 '모듈에 코드 넣기'가 정한 파일 구조와 '꼭 지킬 것'을 따른다. `user_tx`, `enqueue`, 자식 행의 `user_id` 복사 규칙이 거기 있다.
 - **스키마 변경**: `docs/schema-mvp.sql`을 고치고 [README.md](README.md)의 '스키마를 바꿀 때'대로 DB를 다시 만든다. [docs/schema-mvp.md](docs/schema-mvp.md)의 표와 ERDCloud 스냅샷도 함께 갱신한다.
-- **AI 호출**: 모델은 OpenAI SDK로 직접 부르고, 재시도는 SDK의 `max_retries`(배경 작업 2, Q&A 답변 단계 1)에 맡기며, 호출마다 timeout을 둔다. 호출 전에 `usage_ledger`에 비용을 예약하고 호출 뒤에 정산한다. LangGraph는 Q&A 답변 그래프와 과목 노트 업데이트 그래프에만 쓴다. (ADR-0009, ADR-0017, ADR-0022)
+- **AI 호출**: 모델은 OpenAI SDK로 직접 부르고, 재시도는 SDK의 `max_retries`(배경 작업 2, `qa_answer` 작업의 모든 단계 1)에 맡기며, 호출마다 timeout을 둔다. 호출 전에 `usage_ledger`에 비용을 예약하고 호출 뒤에 정산한다. LangGraph는 Q&A 답변 그래프와 과목 노트 업데이트 그래프에만 쓴다. (ADR-0009, ADR-0017, ADR-0022)
 - **출처 검증**: AI 출력의 근거 ID가 그 작업의 입력 안에 있는지 서버가 검증한 뒤 저장한다. 웹 근거는 웹 검색 도구 응답의 인용 목록에 있는 URL만 통과한다. (ADR-0007)
 - **원문 보호**: 작업 메시지에는 작업 ID와 `user_id`만 싣고, 로그에는 ID만 남긴다. 질문 원문은 `messages` 테이블에만 둔다.
 - **바꾸지 않는 기록**: `block_revisions`와 `observations`는 기존 행을 두고 새 행을 추가해 고친다. ([docs/schema-mvp.md](docs/schema-mvp.md) '보안')

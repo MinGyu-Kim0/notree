@@ -1514,6 +1514,19 @@
           "relType": "ZERO_OR_ONE_OR_MANY"
         },
         {
+          "_id": "5cPTXTN4RBNPZYRmo",
+          "name": "기준 판 번호",
+          "pName": "base_revision",
+          "domain": "",
+          "type": "int",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
           "_id": "CYJohL4WosSGE2h2i",
           "name": "변경 종류",
           "pName": "op",
@@ -2848,7 +2861,7 @@
   "shapeData": [],
   "connectorData": [],
   "domainData": [],
-  "createdAt": "2026-11-19T00:42:56.732Z",
+  "createdAt": "2026-11-19T02:30:07.014Z",
   "creatorName": "",
   "creatorThumb": ""
 }
