@@ -75,6 +75,30 @@ async def test_reload_comes_first_when_events_were_trimmed(
         assert await receive(frames) == (new, "done", {})  # 남은 옛 이벤트는 건너뛴다
 
 
+async def test_reload_when_events_are_trimmed_while_connected(
+    users: tuple[int, int],
+) -> None:
+    a, _ = users
+    before = await publish(a, "token", {})
+    async with aclosing(stream(a, None)) as frames:
+        assert await frame(frames) == f"id: {before}\n\n"
+        for n in range(1200):  # 화면이 읽지 않는 사이 before와 그 뒤 일부가 잘려 나간다
+            await publish(a, "token", {"n": n})
+        assert await receive(frames) == (None, "reload", {})
+        new = await publish(a, "done", {})
+        assert await receive(frames) == (new, "done", {})  # 남은 옛 이벤트는 건너뛴다
+
+
+async def test_many_events_arrive_without_reload_when_none_were_trimmed(
+    users: tuple[int, int],
+) -> None:
+    a, _ = users
+    before = await publish(a, "token", {})
+    async with aclosing(stream(a, before)) as frames:
+        ids = [await publish(a, "token", {"n": n}) for n in range(900)]
+        assert [(await receive(frames))[0] for _ in ids] == ids
+
+
 async def test_reload_when_stream_is_empty(users: tuple[int, int]) -> None:
     a, _ = users  # Redis 데이터를 잃은 뒤의 재접속
     async with aclosing(stream(a, "1700000000000-0")) as frames:

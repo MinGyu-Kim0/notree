@@ -15,6 +15,7 @@ from notree.platform.auth import current_user_id
 router = APIRouter()
 # 이벤트가 없을 때 주석 줄을 보내는 간격. 조용한 연결을 중간 장비가 끊지 않게 한다
 KEEPALIVE_MS = 15_000
+MAX_EVENTS = 1000  # 사용자별로 남기는 이벤트 수(약). 넘으면 오래된 것부터 잘린다
 redis = Redis.from_url(
     os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"),
     decode_responses=True,
@@ -34,7 +35,7 @@ async def publish(user_id: int, event: str, data: Mapping[str, Any]) -> str:
     stream_id = await redis.xadd(
         f"events:{user_id}",
         {"event": event, "data": json.dumps(dict(data))},
-        maxlen=1000,  # 최근 약 1000건만 남긴다 (approximate가 기본값)
+        maxlen=MAX_EVENTS,  # approximate가 기본값이라 MAX_EVENTS보다 적게 남지는 않는다
     )
     return cast(str, stream_id)
 
@@ -74,7 +75,16 @@ async def stream(user_id: int, last_event_id: str | None) -> AsyncGenerator[str,
         if not batches:
             yield ": keepalive\n\n"
             continue
-        for cursor, fields in batches[0][1]:
+        entries = batches[0][1]
+        # 느린 화면이 읽지 않는 사이 cursor 뒤가 잘렸을 수 있다. 잘렸다면 남은 것이 한꺼번에 MAX_EVENTS건 넘게 온다.
+        # 그때 마지막으로 보낸 이벤트가 Stream에 없으면 그 뒤를 놓쳤을 수 있으니 reload로 알리고 지금부터 보낸다
+        if len(entries) >= MAX_EVENTS and not await redis.xrange(
+            key, cursor, cursor, count=1
+        ):
+            cursor = entries[-1][0]
+            yield "event: reload\ndata: {}\n\n"
+            continue
+        for cursor, fields in entries:
             yield f"id: {cursor}\nevent: {fields['event']}\ndata: {fields['data']}\n\n"
 
 
