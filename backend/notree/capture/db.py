@@ -3,12 +3,13 @@
 from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import FetchedValue, insert, literal, select
+from sqlalchemy import FetchedValue, insert, literal, select, text
 from sqlalchemy.dialects.postgresql import ARRAY, TEXT
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from notree.platform.db import Base
+from notree.platform.jobs import counts_toward_limit
 
 
 class Course(Base):
@@ -56,3 +57,12 @@ async def create_lecture(
         .from_select(["user_id", "course_id", "title"], parent)
         .returning(Lecture)
     )
+
+
+@counts_toward_limit
+async def count_active_recordings(db: AsyncSession) -> int:
+    """진행 중인 녹음 수. 녹음도 사용자가 시작한 작업이라 계정 동시 실행 한도에 든다 (PER-003 5)."""
+    count: int = await db.scalar(
+        text("SELECT count(*) FROM recordings WHERE status IN ('recording', 'paused')")
+    )
+    return count

@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import notree.capture.db  # noqa: F401  녹음 수를 세는 함수를 계정 한도에 등록한다
 from notree.platform.db import user_tx
 from notree.platform.jobs import (
     ConcurrencyLimit,
@@ -284,6 +285,45 @@ async def test_failing_hook_leaves_job_for_sweeper(users: tuple[int, int]) -> No
     # 실패 처리 전체가 롤백돼 running으로 남는다. 회수 루프가 다시 끝내며 훅을 다시 부른다
     done = await reload(job)
     assert (done.status, done.error_code) == ("running", None)
+
+
+async def test_late_failure_releases_its_holds(users: tuple[int, int]) -> None:
+    user_id, _ = users
+    hooked: list[int] = []
+
+    @handler("final_note")
+    async def late(job: Job) -> None:
+        async with user_tx(job.user_id) as db:  # 처리 도중 회수 루프가 실패로 끝냈다
+            await db.execute(
+                update(Job)
+                .where(Job.id == job.id)
+                .values(status="failed", error_code="stalled")
+            )
+            db.add(  # 그 뒤 늦게 깨어나 예약을 잡고 실패한다
+                UsageLedger(
+                    user_id=job.user_id,
+                    job_id=job.id,
+                    provider="openai",
+                    utc_date=datetime.now(UTC).date(),
+                    reserved_usd=Decimal("0.000001"),
+                )
+            )
+        raise ValueError
+
+    @on_failure("final_note")
+    async def hook(db: AsyncSession, job: Job) -> None:
+        hooked.append(job.id)
+
+    job = await add_job(user_id, "final_note")
+    await run_job(job.id, user_id)
+
+    async with user_tx(user_id) as db:
+        holds = await db.scalars(
+            select(UsageLedger.status).where(UsageLedger.job_id == job.id)
+        )
+        assert list(holds) == ["released"]
+    assert (await reload(job)).error_code == "stalled"
+    assert hooked == []  # 훅은 회수 루프가 이미 불렀다
 
 
 @pytest.mark.parametrize("saves_late", [False, True])

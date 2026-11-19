@@ -62,8 +62,10 @@ class Outbox(Base):
 
 Handler = Callable[[Job], Awaitable[None]]
 FailureHook = Callable[[AsyncSession, Job], Awaitable[None]]
+SlotCounter = Callable[[AsyncSession], Awaitable[int]]
 _handlers: dict[str, Handler] = {}
 _failure_hooks: dict[str, FailureHook] = {}
+_slot_counters: list[SlotCounter] = []
 
 
 def handler(kind: str) -> Callable[[Handler], Handler]:
@@ -93,6 +95,15 @@ def on_failure(kind: str) -> Callable[[FailureHook], FailureHook]:
         return fn
 
     return register
+
+
+def counts_toward_limit(fn: SlotCounter) -> SlotCounter:
+    """작업이 아니면서 계정 동시 실행 한도에 드는 것(진행 중인 녹음)을 세는 함수를 등록한다 (PER-003 5).
+
+    platform은 다른 모듈의 테이블을 읽을 수 없어서, 그 테이블을 가진 모듈이 자기 db.py에서 등록한다.
+    """
+    _slot_counters.append(fn)
+    return fn
 
 
 async def enqueue(
@@ -131,7 +142,7 @@ async def enqueue(
 
 
 async def user_started_count(db: AsyncSession) -> int:
-    """계정 동시 실행 한도에 드는 수: 끝나지 않은 사용자 시작 작업 + 진행 중인 녹음 (PER-003 5).
+    """계정 동시 실행 한도에 드는 수: 끝나지 않은 사용자 시작 작업 + 등록된 함수가 센 것(진행 중인 녹음) (PER-003 5).
 
     users 행을 잠가 같은 사용자의 작업 등록과 녹음 시작을 줄 세운다. 둘이 동시에 세면 둘 다 통과해 한도를 넘는다.
     녹음 시작도 같은 트랜잭션에서 이 값을 보고 MAX_USER_STARTED 이상이면 막는다.
@@ -140,14 +151,16 @@ async def user_started_count(db: AsyncSession) -> int:
         text("SELECT 1 FROM users WHERE id = :id FOR NO KEY UPDATE"),
         {"id": db.info["user_id"]},
     )
-    # recordings는 capture의 테이블이지만 platform은 capture를 import할 수 없어 SQL로 센다. RLS가 이 사용자의 행만 센다
-    count: int = await db.scalar(
-        text(
-            "SELECT (SELECT count(*) FROM jobs"
-            "        WHERE user_started AND status IN ('queued', 'running'))"
-            "     + (SELECT count(*) FROM recordings WHERE status IN ('recording', 'paused'))"
+    count = (
+        await db.scalar(
+            select(func.count()).where(
+                Job.user_started, Job.status.in_(("queued", "running"))
+            )
         )
+        or 0
     )
+    for counter in _slot_counters:
+        count += await counter(db)
     return count
 
 
@@ -238,7 +251,9 @@ async def run_job(job_id: int, user_id: int) -> None:
     if error:
         try:
             async with user_tx(user_id) as db:
-                await fail_job(db, job_id, error)
+                if await fail_job(db, job_id, error) is None:
+                    # 회수 루프가 이미 끝낸 작업이다. 훅은 부르지 않고, 이 실행이 늦게 잡은 예약만 푼다
+                    await usage.release_job(db, job_id)
         except Exception as e:  # noqa: BLE001  훅이 실패하면 작업은 running으로 남고 회수 루프가 다시 끝낸다
             log.error(
                 "job %s (%s) failure handling failed: %s",
