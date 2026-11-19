@@ -159,6 +159,7 @@ sequenceDiagram
 - **재연결** (QUR-003, SIR-001): 브라우저↔`realtime` 연결이나 `realtime`↔Soniox 연결이 끊기면 1·2·4초 간격으로 3회 다시 연결한다. 그동안 음성은 버퍼에 보존한다. 모두 실패하면 시스템 중지 또는 부분 완료로 끝내고, 복구 업로드를 제공한다.
 - **비용 예약 연장**: 30분 단위로 연장한다. 연장할 수 없으면 경고한 뒤 예약 시간에 정상 종료한다(PER-003 3).
 - **세션 종료**: 사용자 종료, 연결 끊김 5분, 180분 상한 중 먼저 오는 시각이다. 이 시각부터 음성 만료 7일을 센다(DAR-001 4).
+- **실시간 요약 개수** (SFR-006 5): 강의당 대기 1개는 `jobs_live_summary_queued`가 막는다. 실행 1개는 처리 함수가 지킨다. 같은 강의의 다른 요약이 실행 중이면 아무것도 하지 않고 끝내고, 실제로 요약한 작업이 끝날 때 아직 요약하지 않은 확정 전사(Redis에 둔 '마지막으로 요약한 구간' 이후)가 남아 있으면 하나를 더 등록한다. 이 등록과 자기 작업의 종료(`complete_job`)는 한 트랜잭션에서 커밋한다. 후속 작업이 앞 작업을 `running`으로 보고 건너뛰지 않게 하기 위해서다. 녹음이 끝나 새 전사가 오지 않아도 남은 구간이 요약된다.
 
 ### F2. 녹음 중 용어 적용 (STT 세션 교체)
 
@@ -203,11 +204,12 @@ sequenceDiagram
   K->>K: 과목 노트 업데이트 그래프(LangGraph, Postgres 체크포인터): 입력 → 배치 → 단원별 병합(Send) → 충돌 분류 → 반영
   K->>P: 과목 노트 편집 잠금(읽기 허용), 노드마다 체크포인트 저장
   alt 의미 충돌 있음
-    K->>P: 충돌 저장 노드: 충돌을 note_changes(pending)로 저장(이미 있으면 건너뜀), note_updates awaiting_user, 잠금 해제
-    K->>K: interrupt 노드에서 멈춤(저장 없음, 작업 끝)
+    K->>P: 충돌 저장 노드: 충돌을 note_changes(pending)로 저장(이미 있으면 건너뜀)
+    K->>K: interrupt 노드에서 멈춤(저장 없음), 체크포인트 저장
+    K->>P: 그래프 실행이 돌아온 뒤 note_updates awaiting_user, 잠금 해제 (작업 끝)
     K-->>B: SSE 사용자 확인 필요
-    B->>P: 충돌마다 수락(accepted)·거절 → pending이 0개면 jobs(과목 노트 업데이트 재개) + outbox
-    K->>K: 같은 thread를 Command(resume)로 이어 감
+    B->>P: note_updates 잠금 → 충돌마다 수락(accepted)·거절, 이 요청이 pending을 바꿨고 남은 pending이 0개면 note_updates running + jobs(과목 노트 업데이트 재개) + outbox
+    K->>K: 남은 interrupt가 있고 pending이 0개면 같은 thread를 Command(resume)로 이어 감(결정은 note_changes에서 읽음). pending이 남았으면 awaiting_user를 되살리고 끝
   end
   K->>P: 반영: 노트 변경 + note_updates completed (한 트랜잭션), thread 삭제
   K-->>B: SSE 진행·완료
