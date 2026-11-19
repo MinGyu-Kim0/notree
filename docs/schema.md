@@ -546,7 +546,8 @@ CREATE TABLE messages (                   -- 질문 원문은 여기에만 둔�
 CREATE INDEX ON messages (user_id, conversation_id, id);
 -- answer_status·reflect_status·learner_status는 qa_answer 작업의 단계 완료 표시다. 각 단계 결과와 같은 트랜잭션에서 쓰고,
 -- 인계·재시도 때 이 값을 보고 남은 단계만 한다. 반영·관찰 단계는 answer_status = 'completed'일 때만 돈다 (9장 D11).
--- 확인 질문·상충 안내 답변(answer_kind = 'clarification'·'conflict')은 저장 트랜잭션에서 reflect_need·learner_status를 'not_needed'로 쓰고 두 단계를 건너뛴다.
+-- 확인 질문·상충 안내 답변(answer_kind = 'clarification'·'conflict')은 두 단계를 건너뛰고, 저장 트랜잭션에서 learner_status = 'not_needed'로 쓴다.
+-- 확인 질문은 reflect_need = 'not_needed', 상충 안내는 reflect_need = 'hold'·reflect_status = 'held'와 reflect_reason이다 (근거 충돌은 보류, SFR-017 4).
 ```
 
 ## 6. learner

@@ -84,7 +84,8 @@ flowchart TB
   VAL --> SAVE[답변 저장 · answer_status · answer_kind]
   end
   SAVE -- completed · answer --> AFTER[반영 → 관찰 단계<br/>F4 ⑤~⑧과 같음]
-  SAVE -- completed · clarification·conflict --> END2([끝 · 반영·학습 상태 not_needed])
+  SAVE -- completed · clarification --> END2([끝 · 반영·학습 상태 not_needed])
+  SAVE -- completed · conflict --> END3([끝 · 반영 held + 이유 · 학습 상태 not_needed])
   SAVE -- evidence_changed --> END1([끝 · 질문 보존])
 ```
 
