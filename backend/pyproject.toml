@@ -33,7 +33,8 @@ name = "모듈 의존 방향"
 type = "layers"
 containers = ["notree"]
 layers = [
-    "capture | tutor | review | account",
+    "tutor | review | account",
     "notebook | learner",
+    "capture",
     "platform",
 ]
