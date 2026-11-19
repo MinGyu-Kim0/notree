@@ -332,6 +332,37 @@ async def test_complete_job_commits_with_follow_up(
     assert len(sent) == 1
 
 
+async def test_complete_job_rolls_back_with_failed_save(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, _ = users
+    sent = fake_kiq(monkeypatch)
+    job = await add_job(user_id, "purge", status="running")
+    async with user_tx(user_id) as db:
+        hold = UsageLedger(
+            user_id=user_id,
+            job_id=job.id,
+            provider="openai",
+            utc_date=datetime.now(UTC).date(),
+            reserved_usd=Decimal("0.000001"),
+        )
+        db.add(hold)
+
+    with pytest.raises(ValueError):
+        async with job_tx(job) as db:
+            await complete_job(db, job)
+            await enqueue(db, "purge", target_id=7)
+            raise ValueError  # 마지막 저장이 실패했다
+
+    # 종료·예약 해제·후속 등록이 함께 롤백된다
+    assert (await reload(job)).status == "running"
+    async with user_tx(user_id) as db:
+        assert (await db.get_one(UsageLedger, hold.id)).status == "held"
+        assert list(await db.scalars(select(Job.id).where(Job.id != job.id))) == []
+        assert list(await db.scalars(select(Outbox.id))) == []
+    assert sent == []
+
+
 async def test_late_failure_releases_its_holds(users: tuple[int, int]) -> None:
     user_id, _ = users
     hooked: list[int] = []
