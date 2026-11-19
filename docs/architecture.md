@@ -209,7 +209,7 @@ sequenceDiagram
     K->>P: 그래프 실행이 돌아온 뒤 note_updates awaiting_user, 잠금 해제 (작업 끝)
     K-->>B: SSE 사용자 확인 필요
     B->>P: note_updates 잠금 → 충돌마다 수락(accepted)·거절, 이 요청이 pending을 바꿨고 남은 pending이 0개면 jobs(과목 노트 업데이트 재개) + outbox
-    K->>K: 남은 interrupt가 있으면 같은 thread를 Command(resume)로 이어 감(결정은 note_changes에서 읽음)
+    K->>K: 남은 interrupt가 있고 pending이 0개면 같은 thread를 Command(resume)로 이어 감(결정은 note_changes에서 읽음). pending이 남았으면 awaiting_user를 되살리고 끝
   end
   K->>P: 반영: 노트 변경 + note_updates completed (한 트랜잭션), thread 삭제
   K-->>B: SSE 진행·완료
