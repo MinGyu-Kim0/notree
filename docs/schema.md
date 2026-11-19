@@ -1,8 +1,8 @@
 # Notree DB 스키마 설계
 
-- 기준: 요구사항 정의서 v0.4.3, [architecture.md](architecture.md), ADR-0001~0008
+- 기준: 요구사항 정의서 v0.4.4, [architecture.md](architecture.md), ADR-0001~0022
 - 작성일: 2026-11-17
-- 상태: 9장 결정 항목 D1~D9 확정. 되돌리기 어려운 결정은 ADR-0009~0016에 있다.
+- 상태: 9장 결정 항목 D1~D11 확정. 되돌리기 어려운 결정은 ADR-0009~0020과 ADR-0022에 있다.
 - 2026-11-17에 이 설계를 SQL로 옮겨 PostgreSQL 17 + pgvector 0.8.0 + pg_bigm 1.2에 적용하고 사용자 경계·휴지통·바꾸지 않는 기록을 점검했다(그때의 SQL은 남기지 않았다). 그때 확인한 동작은 1.4에 반영했다.
 - 용어는 [GLOSSARY.md](../GLOSSARY.md)를 따른다. 테이블 이름은 영어, 설명은 용어집 용어로 쓴다.
 
@@ -74,7 +74,7 @@ CREATE POLICY hide_trash ON t AS RESTRICTIVE FOR SELECT
 
 - `account.resolve_session(token_hash) → user_id`: 요청마다 세션 확인
 - `account.upsert_google_user(sub, email) → user_id`: 로그인
-- `platform.claim_stale_jobs() → (job_id, user_id)[]`: 회수 루프(30초)
+- `platform.unsent_outbox() → (outbox_id, user_id)[]`: 회수 루프. 보내지 못한 오래된 `outbox` 행만 다시 보낸다([ADR-0019](adr/0019-outbox-and-ack-after-commit.md)). `jobs`를 30초마다 훑어 다시 넣던 방식(ADR-0001)은 쓰지 않는다
 - `platform.global_spend(utc_date) → numeric`: 전체 하루 한도
 
 ### 1.5 바꾸지 않는 기록

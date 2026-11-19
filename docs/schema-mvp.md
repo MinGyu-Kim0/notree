@@ -46,18 +46,26 @@ docker stop notree-mvp
 | | 보낼 작업 | `outbox` | 작업 전달을 `jobs`와 같은 트랜잭션에 기록. 회수 루프가 못 보낸 것을 다시 보낸다 |
 | | 비용 장부 | `usage_ledger` | AI 비용 예약·정산 |
 
+테이블을 소유하는 모듈은 영역을 따른다: 계정 `account`, 강의 기록 `capture`, 노트 `notebook`, 질의응답 `tutor`, 학습자 `learner`, 복습 `review`, 운영 `platform`. 예외로 `note_changes`는 표에서 질의응답 아래 있지만 `notebook`이 소유한다. `tutor`는 변경안을 제출만 한다([architecture.md](architecture.md) 3절). 표의 설명에 담지 못한 것이 셋 있다.
+
+- `messages.question_id`가 답변을 질문에 잇는다. 재시도로 한 질문에 답변이 여럿이어도 짝이 맞는다.
+- 노트는 과목마다, 강의마다 살아 있는 것이 하나다(`notes_one_course`, `notes_one_lecture`). 휴지통에 있는 노트는 자리를 차지하지 않는다.
+- `jobs.user_started`는 사용자가 요청해 시작한 작업을 표시한다. 계정 동시 실행 한도가 이 작업만 센다(아래 '작업 전달과 멈춘 작업').
+
 ## v2에서 뺀 것
 
 | v2에 있던 것 | MVP에서 | 나중에 필요해지는 때 |
 |---|---|---|
 | `trash_batches`, 모든 테이블의 `trash_id` | 과목·강의·노트·대화의 `deleted_at`만. 자식은 부모를 거쳐 조회 | 삭제 범위 확인 화면, 묶음 단위 복원(SFR-048) |
 | `context_versions` | `courses`에 현재 맥락, `recordings.context`에 고정본 | 녹음 중 용어 즉시 적용(SFR-046 3) |
+| 전사 정정 버전(`segment_corrections`) | `segments.corrected_text` 한 열 | 정정 이력, 정정 되돌리기, 전사 근거의 '갱신 필요'(아래 '근거 형식') |
 | `note_versions` | 블록별 이력(`block_revisions`)만. 깊이(ADR-0020)는 `note_blocks.depth`에 둔다 | 노트 전체를 특정 판으로 복원(SFR-010 5) |
 | `search_docs`(pgvector + pg_bigm) | 없음. Q&A는 과목 노트를 통째로 맥락에 넣는다(아래 'MVP Q&A 흐름') | 노트가 자주 잘릴 때, 노트 검색(SFR-047) |
 | 작업 인계와 실행 시도 번호(ADR-0018) | 없음. 멈춘 작업은 실패로 끝내고 사용자가 재시도한다(아래 '작업 전달과 멈춘 작업') | 사용자 재시도 없이 이어서 끝내야 할 때 |
+| 요청 식별자 `jobs.idempotency_key`(ADR-0019) | 없음. Q&A 중복 전송은 `jobs_one_qa`가, 답안 재전송은 `attempts.idempotency_key`가 막는다 | 다른 작업의 재전송이 문제가 될 때 |
 | outbox의 완료·실패·취소 이벤트(ADR-0019) | 작업 전달만 | 완료 이벤트 유실이 화면에 문제가 될 때 |
 | `review_units` + `review_items` + `gradings` | `review_cards` + `attempts` | 문제 재생성 이력, 재평가 이력(DAR-004 4) |
-| 전사 수정 제안, 정지 구간, 답안 초안, 작업 단계 기록(`job_stages`) | 없음 | SFR-058, DAR-001 5, SFR-052 4, QUR-007 |
+| 전사 수정 제안, 정지 구간, 답안 초안, 작업 단계 기록(`job_stages`) | 없음 | SFR-058, SFR-003 1, SFR-052 4, QUR-007 |
 
 ## LangGraph
 
@@ -119,14 +127,36 @@ flowchart TB
 
 ## 작업 전달과 멈춘 작업
 
-- **전달**: `enqueue`는 `jobs` 행과 `outbox` 행을 같은 트랜잭션에 넣고, 커밋 직후 Redis로 보내 `sent_at`을 채운다. 커밋 뒤 보내기 전에 죽으면 회수 루프가 `sent_at IS NULL`인 오래된 행을 다시 보낸다(ADR-0019). 같은 작업이 두 번 와도 워커는 `status = 'queued'`인 작업만 가져가므로 한 번만 돈다.
+아래 함수는 `backend/notree/platform`의 `jobs`, `sweeper`, `usage`에 있다. 쓰는 법은 [README.md](../README.md) '모듈에 코드 넣기'에 있다.
+
+- **전달**: `enqueue(db, kind, target_id=None, *, user_started=False)`는 `jobs` 행과 `outbox` 행을 부른 쪽의 트랜잭션에 넣고, 커밋 직후 Redis로 보내 `sent_at`을 채운다. 커밋 뒤 보내기 전에 죽으면 회수 루프가 `sent_at IS NULL`인 오래된 행을 다시 보낸다(ADR-0019). 같은 작업이 두 번 와도 워커는 `status = 'queued'`인 작업만 가져가므로 한 번만 돈다.
+- **계정 동시 실행 한도** (PER-003 5, ADR-0022): 사용자가 요청해 시작하는 작업은 `user_started=True`로 등록한다. 이때 `enqueue`가 `users` 행을 잠그고 그 계정의 끝나지 않은 작업을 센다. 사용자가 시작한 작업이 이미 2개이거나, Q&A를 등록하는데 Q&A가 이미 1개 있으면 `ConcurrencyLimit`을 낸다. Q&A 1개는 유니크 인덱스 `jobs_one_qa`도 막는다. 시스템이 이어서 만드는 작업은 `user_started` 없이 등록하고, 한도에 세지 않는다.
+- **회수 루프**: `sweep_once()`가 worker 프로세스 안에서 30초마다 돈다. 한 번 돌 때 보내지 못한 작업 전달을 다시 보내고, 멈춘 작업을 실패로 끝낸다. 여러 사용자의 행을 훑으므로 `SECURITY DEFINER` 함수 `unsent_outbox`·`fail_stalled_jobs`로 한다(ADR-0010).
 - **멈춘 작업**: MVP는 인계를 하지 않는다. 대신 회수 루프가 `running`인 채 오래된 작업(초기값 Q&A 3분, 배경 작업 30분)을 `failed`(`error_code = 'stalled'`)로 끝내고 비용 예약을 푼다. 그러지 않으면 작업이 영원히 `running`으로 남아 계정당 Q&A 1개 한도와 비용 예약을 계속 잡는다. 사용자는 '생성 실패'를 보고 재시도한다(SFR-021 3, SFR-043).
-- **늦은 저장 막기**: 결과를 저장하는 트랜잭션은 그 작업이 아직 `running`인지 확인하고, 아니면 저장하지 않는다. 다시 실행하는 쪽이 없으므로 이 확인만으로 실패 처리 뒤 깨어난 워커의 저장을 막는다. 인계를 넣을 때는 ADR-0018의 `attempt_no`로 바꾼다.
-- 회수 루프는 여러 사용자의 행을 훑으므로 `SECURITY DEFINER` 함수로 만든다(ADR-0010).
+- **실패 훅**: 작업이 실패로 끝나면(처리 함수의 예외, 회수 루프의 stalled 처리) `platform`이 그 작업 종류에 `@on_failure(kind)`로 등록된 함수를 부른다. 모듈은 거기서 자기 도메인 행(`messages.answer_status`, `notes.status`, `attempts.grade_status`)을 실패로 바꾼다. `platform`은 모듈을 import할 수 없어서 훅으로 한다. 훅이 없으면 `jobs`만 `failed`가 되고 화면에는 계속 '생성 중'이 남아서, 사용자가 '생성 실패'를 보고 재시도할 수 없다. 회수 루프는 결과 저장을 마친 작업도 실패로 끝낼 수 있으므로, 훅은 아직 진행 중인 행만 바꾼다.
+- **늦은 저장 막기**: 처리 함수는 결과를 `job_tx(job)` 안에서 저장한다. `job_tx`는 그 작업이 아직 `running`인지 확인하고, 아니면 `JobNotRunning`을 내서 저장하지 않는다. 다시 실행하는 쪽이 없으므로 이 확인만으로 실패 처리 뒤 깨어난 워커의 저장을 막는다. 인계를 넣을 때는 ADR-0018의 `attempt_no`로 바꾼다.
+- **비용 예약**: AI 호출 전에 `reserve(db, usd, *, provider="openai", job_id=None)`로 예약하고, 호출 뒤에 `settle(db, ledger_id, cost_usd)`로 정산한다. 하루 한도(PER-003 2)를 넘으면 `reserve`가 `BudgetExceeded`를 낸다. `job_id`를 준 예약 가운데 정산하지 못하고 남은 것은 작업을 끝내는 경로(성공, 실패, stalled 처리)가 푼다(`release_job(db, job_id)`). 예약은 날짜가 바뀌어도 한도에 남기 때문이다.
+
+## 근거 형식
+
+`note_blocks.sources`, `block_revisions.sources`, `messages.sources`, `review_cards.sources`가 같은 형식을 쓴다.
+
+- **형식**: `[{segment_id} | {block_id, revision} | {url, fetched_at}]`. 항목 하나가 전사 구간, 노트 블록, 웹 주소 가운데 하나를 가리킨다. `revision`은 인용한 순간 그 블록의 `note_blocks.revision`이고, `fetched_at`은 웹 검색을 한 조회 시각이다(SFR-010 1). `review_cards.sources`에는 `{block_id, revision}`만 온다.
+- **검증**: AI는 ID와 URL만 낸다. 서버가 `platform.sources.verify_sources(sources, *, segment_ids, block_revisions, urls)`로 그 작업의 입력에 있던 근거만 통과시키고, 블록에는 입력의 판 번호를, 웹 근거에는 입력의 조회 시각을 붙여 저장 형식으로 돌려준다(ADR-0007). 통과하지 못한 근거는 버린다. `urls`에는 웹 검색 도구 응답의 인용 목록을 조회 시각과 함께 넘긴다.
+- **'갱신 필요'와 '출처 삭제됨'**: 저장하지 않고 조회할 때 구한다(ADR-0012). 인용한 `revision`이 그 블록의 현재 `revision`과 다르면 '갱신 필요'이고, 블록이 없거나 `deleted_at`이 있으면 '출처 삭제됨'이다. 복습 카드도 같은 비교로 멈춘다(SFR-041).
+- **이력의 근거**: `block_revisions`에도 그 판의 근거를 둔다. 블록을 되돌릴 때 내용과 근거가 함께 돌아와야 해서다.
+- shortcut: 전사 구간에는 버전이 없어 전사 정정으로 생기는 '갱신 필요'는 판정하지 못한다. 정정 버전을 넣을 때 `{segment_id, version}`으로 넓힌다.
+
+## 노트에서 개념과 복습 카드까지
+
+- 과목 노트 업데이트가 완료되면 `notebook`이 `enqueue("generate_card", target_id=과목 노트 ID)`로 알린다. `notebook`은 `review`를 부를 수 없어서 작업으로 넘긴다([architecture.md](architecture.md) 3절).
+- `review`의 `generate_card` 처리 함수가 과목 노트 블록을 `notebook`의 공개 함수로 읽고, 블록에서 뽑은 개념을 `learner`의 공개 함수로 `concepts (course_id, key)`에 UPSERT한 뒤, 개념마다 복습 카드(`review_cards`)를 만든다. 카드의 근거는 `{block_id, revision}`이다(위 '근거 형식').
+- 개념은 이 작업이 만든다. Q&A는 개념을 만들지 않고 있는 목록에서만 고른다(위 'MVP Q&A 흐름').
+- 개념 추출과 출제를 한 호출로 할지, 어떤 블록과 개념을 고를지는 `review`에서 정한다(SFR-028~034). 흐름 그림은 [architecture.md](architecture.md) F5에 있다.
 
 ## 보안
 
 - 모든 사용자 테이블에 `user_id` + RLS(`sessions` 제외). 자식 테이블의 `user_id`는 관계가 아니라 RLS용 복사본이라 `users`로 FK를 걸지 않는다. 소유는 부모 FK 체인(과목 → 사용자)으로 이어진다.
-- `jobs`도 RLS를 받는다. 워커는 사용자를 모르면 작업 행을 읽지 못하므로, 작업 메시지에 작업 ID와 `user_id`를 함께 싣고 워커가 그 값으로 `SET LOCAL app.user_id`를 한다. 여러 사용자의 작업을 훑는 회수 루프(위 '작업 전달과 멈춘 작업')는 `SECURITY DEFINER` 함수로 만든다(ADR-0010).
+- `jobs`도 RLS를 받는다. 워커는 사용자를 모르면 작업 행을 읽지 못하므로, 작업 메시지에 작업 ID와 `user_id`를 함께 싣고 워커가 그 값으로 `SET LOCAL app.user_id`를 한다. 여러 사용자의 작업을 훑는 회수 루프(위 '작업 전달과 멈춘 작업')는 `SECURITY DEFINER` 함수 `unsent_outbox`·`fail_stalled_jobs`로 한다(ADR-0010).
 - 앱 계정은 `users`·`block_revisions`·`observations`·`usage_ledger`를 지울 수 없고, `block_revisions`·`observations`는 고칠 수도 없다. 영구 삭제는 cron(`notree_admin`)만 한다.
 - FK는 단일 열이라 자식의 `user_id`가 부모와 같은지 DB가 확인하지 않는다. 자식은 부모를 RLS로 걸러 읽는 `INSERT ... SELECT ... FROM <부모> WHERE id = $1`로 만든다. 남의 부모 ID면 0행이 들어가고, `user_id`도 부모에서 복사된다.
