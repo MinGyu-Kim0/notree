@@ -149,15 +149,10 @@ async def test_user_started_limit(
         await enqueue(db, "grade", user_started=True)
 
 
-async def test_active_recording_counts_toward_limit(
-    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    user_id, _ = users
-    fake_kiq(monkeypatch)
+async def start_recording(user_id: int) -> None:
+    """진행 중인 녹음 하나를 만든다. 앞선 실행이 남긴 과목은 먼저 지운다(RLS가 이 사용자의 것만, 강의·녹음은 CASCADE)."""
     async with user_tx(user_id) as db:
-        await db.execute(
-            text("DELETE FROM courses")
-        )  # RLS가 이 사용자의 과목만 지운다. 강의·녹음은 CASCADE
+        await db.execute(text("DELETE FROM courses"))
         course_id = await db.scalar(
             text("INSERT INTO courses (user_id, name) VALUES (:u, 'c') RETURNING id"),
             {"u": user_id},
@@ -176,6 +171,22 @@ async def test_active_recording_counts_toward_limit(
             ),
             {"u": user_id, "l": lecture_id},
         )
+
+
+async def test_active_recording_counts_toward_limit(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, other_id = users
+    fake_kiq(monkeypatch)
+    await start_recording(other_id)  # 다른 사용자의 녹음은 세지 않는다
+    async with user_tx(user_id) as db:
+        await db.execute(text("DELETE FROM courses"))
+        await enqueue(db, "grade", user_started=True)
+        await enqueue(db, "grade", user_started=True)
+        await db.execute(delete(Job))
+
+    await start_recording(user_id)
+    async with user_tx(user_id) as db:
         await enqueue(db, "qa_answer", user_started=True)
 
     # 녹음 1 + Q&A 1로 계정당 2개가 찼다 (PER-003 5)
@@ -183,8 +194,9 @@ async def test_active_recording_counts_toward_limit(
         async with user_tx(user_id) as db:
             await enqueue(db, "grade", user_started=True)
 
-    async with user_tx(user_id) as db:
-        await db.execute(text("DELETE FROM courses"))
+    for uid in users:
+        async with user_tx(uid) as db:
+            await db.execute(text("DELETE FROM courses"))
 
 
 async def test_concurrent_enqueues_stay_within_limit(
