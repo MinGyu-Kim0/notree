@@ -26,7 +26,7 @@
 
 1) React·FastAPI·LangGraph·PostgreSQL을 채택한다.
 2) 작업 큐는 Redis Streams 위에서 Taskiq(taskiq-redis RedisStreamBroker)로 구현한다. 작업 상태의 원본은 PostgreSQL에 두고, 전달할 작업은 PostgreSQL outbox에 함께 기록해 전달되지 못한 작업을 다시 보낸다.
-3) LangGraph는 판단 분기와 여러 단계가 필요한 Q&A와 과목 노트 업데이트에 쓴다. LangGraph 체크포인터는 쓰지 않고, 과목 노트 업데이트는 DB의 단계 완료 기록으로 재개한다. 모델 호출은 OpenAI SDK로 직접 한다.
+3) LangGraph는 판단 분기와 여러 단계가 필요한 Q&A와 과목 노트 업데이트에 쓴다. Q&A 그래프는 체크포인터 없이 메모리에서만 돌고, 과목 노트 업데이트는 Postgres 체크포인터로 재개하며 의미 충돌은 그래프를 멈춰(interrupt) 사용자 확인을 받는다. 모델 호출은 OpenAI SDK로 직접 한다.
 4) Redis와 Nginx를 채택한다. 화면 알림과 답변 스트리밍은 SSE, 녹음은 WebSocket으로 한다. GHCR은 필요할 때 선택한다. 검색은 PostgreSQL 안에서 pgvector(의미 검색)와 pg_bigm(키워드 검색)을 함께 쓴다.
 5) 노트 편집기는 Tiptap으로 만든다.
 6) 현재 구현의 구조·상한은 요구 근거로 쓰지 않는다.
@@ -34,6 +34,7 @@
 **비고**: [MVP] v0.4.2: Procrastinate 대신 Redis Streams·asyncio 워커(2), ADR-0001). 변경 제안 ① 외부 브로커 사전 평가는 이 결정으로 종료, ② 알림 SSE·녹음 WebSocket 분리는 4)에 반영(ADR-0005). 이로써 10/6 배포 구조 문서와 SSE 사용이 다시 일치한다.
 v0.4.3: LangGraph 사용 범위를 Q&A까지 넓히고 LangChain 없이 OpenAI SDK를 직접 씀(3), ADR-0009). pgvector 채택, 별도 벡터 DB는 쓰지 않음(4), ADR-0016).
 v0.4.4: 직접 만드는 asyncio 워커 대신 Taskiq, 전달 누락 복구는 outbox(2), ADR-0017·0019). LangGraph 체크포인터 제거(3), ADR-0009). 편집기 Tiptap(5), ADR-0020).
+v0.4.5: 과목 노트 업데이트는 Postgres 체크포인터로 재개하고 의미 충돌은 interrupt로 사용자 확인(3), ADR-0023). v0.4.4의 체크포인터 제거를 과목 노트 업데이트에 한해 되돌림. 체크포인트에는 노트·강의 내용만 담기고 질문 원문은 담기지 않는다(SER-001 4).
 
 ## COR-003 검사 후 수동 운영 배포
 
