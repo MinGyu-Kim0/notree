@@ -38,6 +38,9 @@ services:
 
   redis:
     image: redis:8
+    # 디스크에 쓰지 않는다. 답변 토큰이 이벤트 Stream에 실리므로 스냅샷·AOF에 남으면 안 된다(SER-001 4).
+    # Redis는 원본이 아니라 재시작해도 작업 전달은 회수 루프가, 화면은 DB 다시 읽기가 메운다
+    command: redis-server --save "" --appendonly no
     ports:
       - 127.0.0.1:6379:6379
 

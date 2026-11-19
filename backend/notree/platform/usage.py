@@ -43,15 +43,17 @@ async def reserve(
 ) -> int:
     """AI 호출 전에 예상 비용을 예약하고 장부 ID를 돌려준다. 한도를 넘으면 BudgetExceeded다.
 
-    job_id가 남의 작업이거나 없는 작업이면 LookupError다.
+    job_id가 남의 작업이거나 없는 작업, 이미 끝난(running이 아닌) 작업이면 LookupError다.
     사용액은 오늘 정산된 비용에 아직 풀리지 않은 예약을 더한 값이다. 예약은 날짜가 바뀌어도 남는다.
     """
     user_id: int = db.info["user_id"]
     today = datetime.now(UTC).date()
     # FK는 작업이 이 사용자의 것인지 보지 않는다. RLS로 걸러 읽히는 작업에만 예약을 붙인다.
-    # 남의 작업에 붙으면 그 작업이 끝날 때 이 예약이 함께 풀려 한도 계산이 틀어진다
+    # 남의 작업에 붙으면 그 작업이 끝날 때 이 예약이 함께 풀려 한도 계산이 틀어진다.
+    # 끝난 작업에 붙으면 푸는 경로가 없다(회수 루프는 끝난 작업을 다시 보지 않는다). 늦게 깨어난 실행은 여기서 멈춘다
     if job_id is not None and not await db.scalar(
-        text("SELECT true FROM jobs WHERE id = :id"), {"id": job_id}
+        text("SELECT true FROM jobs WHERE id = :id AND status = 'running'"),
+        {"id": job_id},
     ):
         raise LookupError(f"job {job_id}")
     # 같은 사용자의 예약을 줄 세운다. 둘이 동시에 확인하면 둘 다 통과해 한도를 넘는다

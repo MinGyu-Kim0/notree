@@ -60,7 +60,7 @@ async def test_reserve_then_settle(users: tuple[int, int]) -> None:
 async def test_reserve_rejects_job_of_another_user(users: tuple[int, int]) -> None:
     mine, other = users
     async with user_tx(other) as db:
-        job = Job(user_id=other, kind="grade")
+        job = Job(user_id=other, kind="grade", status="running")
         db.add(job)
     try:
         with pytest.raises(LookupError):
@@ -73,6 +73,22 @@ async def test_reserve_rejects_job_of_another_user(users: tuple[int, int]) -> No
             await reserve(db, Decimal("0.1"), job_id=job.id)
     finally:
         async with user_tx(other) as db:
+            await db.execute(delete(Job).where(Job.id == job.id))
+
+
+async def test_reserve_rejects_finished_job(users: tuple[int, int]) -> None:
+    user_id, _ = users
+    async with user_tx(user_id) as db:
+        job = Job(
+            user_id=user_id, kind="grade", status="failed"
+        )  # 회수 루프가 이미 끝냈다
+        db.add(job)
+    try:
+        with pytest.raises(LookupError):
+            async with user_tx(user_id) as db:
+                await reserve(db, Decimal("0.1"), job_id=job.id)
+    finally:
+        async with user_tx(user_id) as db:
             await db.execute(delete(Job).where(Job.id == job.id))
 
 
@@ -161,7 +177,7 @@ async def test_global_limit_across_users(
 async def test_release_job_frees_only_that_jobs_holds(users: tuple[int, int]) -> None:
     user_id, _ = users
     async with user_tx(user_id) as db:
-        job = Job(user_id=user_id, kind="purge")
+        job = Job(user_id=user_id, kind="purge", status="running")
         db.add(job)
         await db.flush()
         await reserve(db, Decimal("0.6"), job_id=job.id)

@@ -100,7 +100,8 @@ CREATE TABLE notes (
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK ((kind = 'course') = (course_id IS NOT NULL)),
   CHECK ((kind = 'course') = (lecture_id IS NULL)),
-  CHECK (kind = 'lecture' OR (published_at IS NULL AND merged_at IS NULL))
+  CHECK (kind = 'lecture' OR (published_at IS NULL AND merged_at IS NULL)),
+  CHECK (kind = 'course' OR status NOT IN ('completed', 'partial') OR published_at IS NOT NULL)   -- 완료된 강의 노트는 발행 시각이 있다
 );
 -- 휴지통에 있는 노트(deleted_at)는 자리를 차지하지 않는다. 노트만 지운 뒤 다시 생성해도 막히지 않는다.
 -- 살아 있는 노트가 이미 있으면 지운 노트의 복원은 이 인덱스에 걸린다. 복원 코드가 그 경우를 안내한다.
@@ -337,7 +338,8 @@ CREATE INDEX jobs_user ON jobs (user_id, created_at);
 -- 계정당 Q&A 1개 (PER-003 5). 'AI 작업 전체 2개'는 개수 검사라 enqueue가 users 행을 잠그고 user_started 작업과 진행 중인 녹음을 센다
 CREATE UNIQUE INDEX jobs_one_qa ON jobs (user_id) WHERE kind = 'qa_answer' AND status IN ('queued', 'running');
 -- 강의당 실시간 요약 대기 1 (SFR-006 5). 등록하는 쪽은 유니크 위반이면 이미 대기 중인 요약이 있는 것이라 건너뛴다.
--- 실행 1은 처리 함수가 지킨다: 같은 강의의 다른 요약이 running이면 아무것도 하지 않고 끝낸다.
+-- 실행 1은 처리 함수가 지킨다: 같은 강의에 자기보다 id가 작은 요약이 running이면 아무것도 하지 않고 끝낸다(동시 시작해도 하나는 실행).
+-- 녹음 종료 경로도 남은 구간을 위해 직접 등록한다.
 -- 실제로 요약한 작업은 끝날 때 아직 요약하지 않은 확정 전사가 남아 있으면 하나를 더 등록한다(녹음 종료 뒤 남은 구간).
 -- 이 등록은 자기 작업의 종료(complete_job)와 한 트랜잭션이라, 후속 작업이 앞 작업을 running으로 보지 않는다
 CREATE UNIQUE INDEX jobs_live_summary_queued ON jobs (target_id) WHERE kind = 'live_summary' AND status = 'queued';

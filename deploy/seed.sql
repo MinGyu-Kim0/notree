@@ -24,9 +24,10 @@ INSERT INTO segments (user_id, recording_id, start_ms, end_ms, stt_text, correct
   (1, 1, 21000, 34000, '스레드는 프로세스 안의 실행 흐름입니다. 같은 프로세스의 스레드는 코드와 데이터, 힙을 공유하고 스택은 따로 가집니다.', NULL),
   (1, 1, 34000, 47000, '문맥 교환은 실행 중인 프로세스의 상태를 PCB에 저장하고 다음 프로세스의 상태를 복원하는 일입니다. 스레드끼리의 교환이 더 쌉니다.', NULL);
 
-INSERT INTO notes (user_id, kind, lecture_id, course_id, status) VALUES
-  (1, 'lecture', 1, NULL, 'completed'),   -- 노트 1: 강의 노트
-  (1, 'course', NULL, 1, 'completed');    -- 노트 2: 과목 노트
+-- 강의 노트는 발행됐고 과목 노트에 이미 반영된 상태다(merged_at = published_at)
+INSERT INTO notes (user_id, kind, lecture_id, course_id, status, published_at, merged_at) VALUES
+  (1, 'lecture', 1, NULL, 'completed', '2026-11-18 10:00+09', '2026-11-18 10:00+09'),   -- 노트 1: 강의 노트
+  (1, 'course', NULL, 1, 'completed', NULL, NULL);                                      -- 노트 2: 과목 노트
 
 -- 블록 ID는 UUIDv7이어야 한다(ADR-0013). content는 자식을 뺀 Tiptap 노드 하나다(ADR-0020).
 INSERT INTO note_blocks (id, user_id, note_id, position, depth, kind, content, author, sources) VALUES

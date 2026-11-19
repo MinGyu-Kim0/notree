@@ -332,6 +332,36 @@ async def test_complete_job_commits_with_follow_up(
     assert len(sent) == 1
 
 
+@pytest.mark.parametrize("kind", ["live_summary", "generate_card"])
+async def test_follow_up_already_queued_keeps_save(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    user_id, _ = users
+    sent = fake_kiq(monkeypatch)
+    async with user_tx(user_id) as db:
+        waiting = await enqueue(
+            db, kind, target_id=7
+        )  # 같은 대상의 후속 작업이 이미 대기 중이다
+    job = await add_job(user_id, "purge", status="running")
+
+    async with job_tx(job) as db:
+        await db.execute(
+            update(Job).where(Job.id == job.id).values(target_id=99)
+        )  # 도메인 저장 대신
+        await complete_job(db, job)
+        again = await enqueue(db, kind, target_id=7)
+
+    assert again.id == waiting.id  # 새로 넣지 않고 대기 중인 작업을 돌려준다
+    done = await reload(job)
+    assert (done.status, done.target_id) == ("succeeded", 99)  # 앞의 저장은 커밋됐다
+    async with user_tx(user_id) as db:
+        follow_ups = list(await db.scalars(select(Job.id).where(Job.kind == kind)))
+        outboxes = list(await db.scalars(select(Outbox.job_id)))
+    assert follow_ups == [waiting.id]
+    assert outboxes == [waiting.id]  # 새 작업이 없으니 outbox도 하나다
+    assert sent == [(waiting.id, user_id)]
+
+
 async def test_complete_job_rolls_back_with_failed_save(
     users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
