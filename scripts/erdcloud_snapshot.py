@@ -47,7 +47,7 @@ DIAGRAM_ID = "YpQYSpgDtsy95cT3D"
 COLUMNS = [
     (["users", "sessions", "jobs", "outbox", "usage_ledger"], "rgba(10, 10, 10, 0.5)"),
     (["courses", "lectures", "recordings", "segments"], "rgba(10, 10, 10, 0.5)"),
-    (["notes", "note_blocks", "block_revisions"], "rgba(178, 27, 0, 0.5)"),
+    (["notes", "note_blocks", "block_revisions", "note_updates"], "rgba(178, 27, 0, 0.5)"),
     (["conversations", "messages", "note_changes"], "rgba(178, 27, 0, 0.5)"),
     (["concepts", "review_cards", "attempts", "observations"], "rgba(0, 172, 178, 0.5)"),
 ]

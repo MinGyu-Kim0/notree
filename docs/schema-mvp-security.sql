@@ -39,6 +39,14 @@ REVOKE DELETE ON users, block_revisions, observations, usage_ledger FROM notree_
 -- 바꾸지 않는 기록
 REVOKE UPDATE ON block_revisions, observations FROM notree_app;
 
+-- LangGraph 체크포인트 (ADR-0023). worker가 시작할 때 setup()으로 이 스키마에 테이블을 만든다.
+-- 테이블에 user_id가 없어 RLS를 받지 않는다. 담기는 것은 노트·강의 내용이고 질문 원문은 아니다.
+-- shortcut: api와 worker가 같은 notree_app 계정이라 DB 권한으로는 api의 접근을 막지 못한다, 계정을 나눌 때 notree_worker로 옮긴다
+CREATE SCHEMA langgraph;
+GRANT USAGE, CREATE ON SCHEMA langgraph TO notree_app;
+GRANT USAGE ON SCHEMA langgraph TO notree_admin;
+ALTER DEFAULT PRIVILEGES FOR ROLE notree_app IN SCHEMA langgraph GRANT SELECT, DELETE ON TABLES TO notree_admin;   -- cron이 삭제·탈퇴 때 thread를 지운다
+
 -- ─── 사용자를 모르는 시점의 함수 (RLS 예외) ───────────────────
 CREATE FUNCTION login_user(p_google_sub text, p_email text) RETURNS bigint
   LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public
