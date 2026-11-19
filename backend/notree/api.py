@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from notree.capture.api import router as capture_router
 from notree.platform.db import engine
+from notree.platform.events import router as events_router
 from notree.platform.jobs import broker
 
 
@@ -20,6 +21,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Notree", lifespan=lifespan)
 app.include_router(capture_router)  # 모듈 라우터는 여기에 한 줄씩 더한다
+app.include_router(events_router)
 
 
 @app.get("/health")

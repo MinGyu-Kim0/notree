@@ -1,7 +1,5 @@
 """뼈대 확인. compose로 띄운 DB에 붙어서 돈다: docker compose exec api pytest"""
 
-from collections.abc import AsyncIterator
-
 import pytest
 from sqlalchemy import delete, text
 from sqlalchemy.exc import DBAPIError
@@ -10,27 +8,9 @@ import notree.api  # noqa: F401  모든 모델을 Base.metadata에 올린다
 from notree.capture.db import Course, create_lecture, list_courses
 from notree.platform.db import Base, engine, user_tx
 from notree.platform.jobs import Job, handler, run_job
+from tests.conftest import login
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
-@pytest.fixture(autouse=True)
-async def _dispose_engine() -> AsyncIterator[None]:
-    yield
-    await engine.dispose()  # 테스트마다 이벤트 루프가 달라서 연결을 넘기지 않는다
-
-
-async def login(sub: str) -> int:
-    async with engine.begin() as conn:
-        user_id: int = await conn.scalar(
-            text("SELECT login_user(:sub, :email)"), {"sub": sub, "email": sub}
-        )
-        return user_id
 
 
 async def test_models_match_schema() -> None:
