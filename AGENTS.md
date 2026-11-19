@@ -13,7 +13,7 @@
 - **설계**: [docs/architecture.md](docs/architecture.md). 코드를 어느 컨테이너·모듈에 둘지 정하거나 처리 흐름을 바꿀 때 읽는다. 끝의 추적표가 요구사항 ID를 구성 요소와 흐름에 연결한다.
 - **실행과 모듈 코드**: [README.md](README.md). 로컬에서 띄우거나, 모듈에 코드를 넣거나, 스키마를 바꾸기 전에 읽는다.
 - **DB 스키마 (지금 기준)**: [docs/schema-mvp.md](docs/schema-mvp.md)와 [docs/schema-mvp.sql](docs/schema-mvp.sql). 테이블·제약·RLS를 만들거나 바꿀 때 읽는다.
-- **DB 스키마 (목표 설계)**: [docs/schema.md](docs/schema.md). MVP에서 뺀 것이 왜 필요한지, 나중에 어떤 모양이 되는지 확인할 때 읽는다. 끝의 연결표가 요구사항 ID를 테이블에 잇는다.
+- **DB 스키마 (목표 설계)**: [docs/schema.md](docs/schema.md). MVP에서 뺀 것이 왜 필요한지, 나중에 어떤 모양이 되는지 확인할 때 읽는다. 끝의 연결표가 요구사항 ID를 테이블에 잇는다. 그림은 [docs/erd.md](docs/erd.md)에 있다.
 - **SQL 패턴**: [.claude/skills/postgres-patterns/SKILL.md](.claude/skills/postgres-patterns/SKILL.md). SQL 쿼리, 마이그레이션, 인덱스, RLS 정책을 쓸 때 읽는다.
 - **장애 시험**: [docs/testing/failure-matrix.md](docs/testing/failure-matrix.md). 작업 재시도·회수·outbox·SSE를 만들거나 바꾸면 해당 시나리오를 돌린다.
 - **결정 이유**: [docs/adr/](docs/adr/). ADR에 적힌 결정과 다른 방향으로 가려면 먼저 해당 ADR을 읽는다. 되돌리기 어렵고 대안이 있었던 결정을 새로 내리면 다음 번호로 ADR을 추가한다.
@@ -22,13 +22,15 @@
 
 지금 코드는 MVP 스키마(`docs/schema-mvp.sql`)를 기준으로 만든다. `docs/schema.md`와 ADR의 장치 가운데 MVP에 없는 것(복합 FK, outbox의 이벤트 전달, 실행 권한, 세대 번호, 삭제 묶음, 노트 버전)은 MVP가 검증된 뒤 리팩터링으로 넣는다. [docs/schema-mvp.md](docs/schema-mvp.md)의 'v2에서 뺀 것' 표가 그 목록이다. 이런 장치가 필요해 보이면 만들기 전에 사람에게 묻는다.
 
+요구사항 비고의 `[MVP]`는 출시 범위라서 이 단계와 다르다. 요구사항 ID가 지금 단계에 드는지는 [docs/architecture.md](docs/architecture.md) 9장 추적표의 '지금 단계' 열에서 확인한다.
+
 알고 건너뛰는 곳에는 `# shortcut: <한계>, <언제 고칠지>` 주석을 남긴다.
 
 ## 반드시 지킬 규칙
 
 아래는 한 줄 요약이고, 세부와 이유는 가리킨 문서에 있다. 해당 코드를 쓰기 전에 그 문서를 읽는다. 규칙과 다르게 가야 하는 상황이면 코드를 쓰기 전에 사람에게 묻는다.
 
-- **모듈 의존**: `backend/notree/<모듈>`은 [architecture.md](docs/architecture.md) 3절 그림의 방향으로만 import한다. 다른 모듈은 그 모듈의 공개 함수로 부르고, 거꾸로 알려야 할 일은 작업으로 등록한다.
+- **모듈 의존**: `backend/notree/<모듈>`은 [architecture.md](docs/architecture.md) 3절 그림의 방향으로만 import한다. 다른 모듈은 그 모듈의 공개 함수로 부르고, 같은 층끼리나 거꾸로 알려야 할 일은 작업으로 등록한다.
 - **모듈 코드**: [README.md](README.md)의 '모듈에 코드 넣기'가 정한 파일 구조와 '꼭 지킬 것'을 따른다. `user_tx`, `enqueue`, 자식 행의 `user_id` 복사 규칙이 거기 있다.
 - **스키마 변경**: `docs/schema-mvp.sql`을 고치고 [README.md](README.md)의 '스키마를 바꿀 때'대로 DB를 다시 만든다. [docs/schema-mvp.md](docs/schema-mvp.md)의 표와 ERDCloud 스냅샷도 함께 갱신한다.
 - **AI 호출**: 모델은 OpenAI SDK로 직접 부르고, 재시도는 SDK의 `max_retries`(배경 작업 2, Q&A 답변 단계 1)에 맡기며, 호출마다 timeout을 둔다. 호출 전에 `usage_ledger`에 비용을 예약하고 호출 뒤에 정산한다. LangGraph는 Q&A 답변 그래프와 과목 노트 업데이트 그래프에만 쓴다. (ADR-0009, ADR-0017, ADR-0022)
@@ -101,7 +103,7 @@
 
 ## 코드 규칙
 
-- 백엔드는 Python 3.12와 `uv`를 쓴다. 의존성은 `backend/`에서 `uv add`로 넣는다.
+- 백엔드는 Python 3.12 이상과 `uv`를 쓴다(Docker 이미지는 3.14). 의존성은 `backend/`에서 `uv add`로 넣는다.
 - 모든 함수의 인자와 반환값에 타입 힌트를 쓴다. `mypy --strict`가 검사한다. `Any`나 `# type: ignore`를 쓰면 같은 줄에 이유를 적는다.
 - 새 로직에는 테스트를 `backend/tests/<모듈>/`에 함께 넣는다.
 - 작업을 끝내기 전에 `scripts/check.sh`를 실행해 통과시킨다. 포맷, 린트, 타입, 모듈 의존, 테스트를 한 번에 검사한다. 테스트는 DB에 붙으므로 README의 '실행' 명령으로 compose를 먼저 띄운다. 포맷과 자동 수정되는 린트는 `scripts/check.sh --fix`가 고친다.
@@ -110,15 +112,15 @@
 ## git 규칙
 
 - **이슈**: 작업은 이슈에서 시작한다. 본문은 `.github/ISSUE_TEMPLATE/`에서 종류에 맞는 템플릿(`spec`, `feat`, `bug`)의 절을 채워 쓰고, 템플릿 머리말의 라벨을 붙인다. 문서 수정 같은 작은 변경은 이슈 없이 PR을 연다.
-- **브랜치**: `main`에서 `<모듈>/<이슈 번호>-<짧은 이름>` 브랜치를 만들어 작업한다(예: `capture/12-recording-session`). 이슈가 없으면 번호를 빼고, 모듈에 속하지 않는 변경은 모듈 자리에 `docs`나 `repo`를 쓴다.
+- **브랜치**: `dev`에서 `<모듈>/<이슈 번호>-<짧은 이름>` 브랜치를 만들어 작업한다(예: `capture/12-recording-session`). 이슈가 없으면 번호를 빼고, 모듈에 속하지 않는 변경은 모듈 자리에 `docs`나 `repo`를 쓴다.
 - **제목**: 커밋 제목과 PR 제목은 `<type>(<모듈>): <요약> (<요구사항 ID>)` 형식으로 쓴다(예: `feat(capture): 녹음 세션 시작 API (SFR-003)`). type은 `feat`, `fix`, `docs`, `refactor`, `test`, `chore` 중 하나다. 요구사항에 묶이지 않는 변경은 ID를 뺀다.
-- **PR**: `main`에는 PR로만 병합한다. 본문은 `.github/pull_request_template.md`의 절을 채워 쓰고, 이슈가 있으면 `Closes #<이슈 번호>`를 적는다. Codex 리뷰를 마치고 사람 한 명 이상이 승인한 뒤 병합한다. 리뷰 기준은 아래 'Code Review Rules'다.
+- **PR**: 작업 브랜치는 `dev`로 PR을 연다. `dev`와 `main`에는 PR로만 병합하고 직접 커밋하지 않는다. 본문은 `.github/pull_request_template.md`의 절을 채워 쓰고, 이슈가 있으면 `Closes #<이슈 번호>`를 적는다. Codex 리뷰를 마치고 사람 한 명 이상이 승인한 뒤 병합한다. 리뷰 기준은 아래 'Code Review Rules'다.
 - **Codex 리뷰**: PR을 열거나 커밋을 푸시하면 Codex 리뷰가 자동으로 돈다. PR을 연 에이전트가 끝까지 처리한다.
   1. `scripts/codex_review.sh wait <PR 번호>`를 백그라운드로 실행해 머리 커밋의 리뷰를 기다린다. 끝나면 열린 지적이 출력된다.
   2. 지적마다 고치거나, 고치지 않을 근거를 정한다. 고칠 것은 커밋해 푸시한다. 지적을 따르면 ADR·요구사항과 다른 방향이 되는 경우에는 고치기 전에 사람에게 묻는다.
   3. 지적마다 `scripts/codex_review.sh resolve <PR 번호> <댓글 ID> <스레드 ID> "<답글>"`로 조치를 답글로 남기고 스레드를 resolve한다. 답글에는 고친 커밋과 바꾼 내용, 또는 고치지 않은 근거를 적는다.
   4. 푸시했으면 1부터 다시 한다. 머리 커밋의 리뷰에 열린 지적이 0개면 끝난다.
-- **병합 방식**: 되돌릴 때 통째로 되돌리면 되는 가벼운 PR은 squash로 병합한다. 따로 되돌릴 수 있어야 하는 변경이 여럿 든 큰 PR은 merge commit으로 병합해 커밋 이력을 `main`에 남긴다.
+- **병합 방식**: 되돌릴 때 통째로 되돌리면 되는 가벼운 PR은 squash로 병합한다. 따로 되돌릴 수 있어야 하는 변경이 여럿 든 큰 PR은 merge commit으로 병합해 커밋 이력을 남긴다.
 
 ## Code Review Rules
 
