@@ -45,10 +45,10 @@ INSERT INTO note_blocks (id, user_id, note_id, position, depth, kind, content, a
    '{"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "프로세스와 스레드"}]}', 'ai', '[]'),
   ('01930000-0000-7000-8000-000000000012', 1, 2, 2, 0, 'paragraph',
    '{"type": "paragraph", "content": [{"type": "text", "text": "프로세스는 실행 중인 프로그램이고, 스레드는 그 안의 실행 흐름이다. 스레드는 스택만 따로 가지므로 문맥 교환이 프로세스보다 싸다."}]}',
-   'ai', '[{"block_id": "01930000-0000-7000-8000-000000000002"}, {"block_id": "01930000-0000-7000-8000-000000000005"}]');
+   'ai', '[{"block_id": "01930000-0000-7000-8000-000000000002", "revision": 1}, {"block_id": "01930000-0000-7000-8000-000000000005", "revision": 1}]');
 
-INSERT INTO block_revisions (user_id, block_id, revision, content, author)
-SELECT user_id, id, revision, content, author FROM note_blocks;
+INSERT INTO block_revisions (user_id, block_id, revision, content, author, sources)
+SELECT user_id, id, revision, content, author, sources FROM note_blocks;
 
 INSERT INTO concepts (user_id, course_id, name, key, state, state_updated_at) VALUES
   (1, 1, '프로세스', '프로세스', 'learning', now()),
@@ -60,5 +60,5 @@ VALUES (1, 2, 'short',
         '{"text": "같은 프로세스의 스레드들이 공유하지 않는 메모리 영역은?"}',
         '{"text": "스택"}',
         '{"criteria": ["스택이라고 답한다"]}',
-        '[{"block_id": "01930000-0000-7000-8000-000000000012"}]',
+        '[{"block_id": "01930000-0000-7000-8000-000000000012", "revision": 1}]',
         now());

@@ -90,14 +90,18 @@ CREATE TABLE notes (
   id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id    bigint NOT NULL,
   kind       text NOT NULL CHECK (kind IN ('lecture', 'course')),
-  course_id  bigint UNIQUE REFERENCES courses ON DELETE CASCADE,    -- 과목 노트는 과목당 1개
-  lecture_id bigint UNIQUE REFERENCES lectures ON DELETE CASCADE,   -- 강의 노트는 강의당 1개
+  course_id  bigint REFERENCES courses ON DELETE CASCADE,    -- 과목 노트는 과목당 1개 (notes_one_course)
+  lecture_id bigint REFERENCES lectures ON DELETE CASCADE,   -- 강의 노트는 강의당 1개 (notes_one_lecture)
   status     text NOT NULL DEFAULT 'generating' CHECK (status IN ('generating', 'completed', 'partial', 'failed')),
   deleted_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK ((kind = 'course') = (course_id IS NOT NULL)),
   CHECK ((kind = 'course') = (lecture_id IS NULL))
 );
+-- 휴지통에 있는 노트(deleted_at)는 자리를 차지하지 않는다. 노트만 지운 뒤 다시 생성해도 막히지 않는다.
+-- 살아 있는 노트가 이미 있으면 지운 노트의 복원은 이 인덱스에 걸린다. 복원 코드가 그 경우를 안내한다.
+CREATE UNIQUE INDEX notes_one_course ON notes (course_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX notes_one_lecture ON notes (lecture_id) WHERE deleted_at IS NULL;
 
 CREATE TABLE note_blocks (
   id         uuid PRIMARY KEY CHECK (uuid_extract_version(id) = 7),   -- 편집기가 만든다. AI 블록은 서버가 만든다 (ADR-0013)
@@ -108,7 +112,7 @@ CREATE TABLE note_blocks (
   kind       text NOT NULL CHECK (kind IN ('paragraph', 'heading', 'list_item', 'code', 'table', 'supplement')),
   content    jsonb NOT NULL,
   author     text NOT NULL CHECK (author IN ('ai', 'user', 'qa')),
-  sources    jsonb NOT NULL DEFAULT '[]',       -- 근거 [{segment_id} | {block_id} | {url}]
+  sources    jsonb NOT NULL DEFAULT '[]',       -- 근거 [{segment_id} | {block_id, revision} | {url, fetched_at}] (schema-mvp.md '근거 형식')
   revision   int NOT NULL DEFAULT 1,            -- 저장할 때 +1. 편집 충돌 확인 (QUR-002)
   deleted_at timestamptz,                       -- 이력과 되돌리기를 위해 행은 남긴다
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -151,6 +155,7 @@ CREATE TABLE messages (
   user_id         bigint NOT NULL,
   conversation_id bigint NOT NULL REFERENCES conversations ON DELETE CASCADE,
   role            text NOT NULL CHECK (role IN ('user', 'assistant')),
+  question_id     bigint REFERENCES messages ON DELETE CASCADE,   -- 답변 → 질문. 재시도로 답변이 여럿이어도 짝이 맞는다
   content         text,
   answer_status   text CHECK (answer_status IN ('generating', 'completed', 'interrupted', 'failed',
                                                 'evidence_changed')),   -- evidence_changed: 저장 직전 근거가 바뀜, 질문 보존 (SFR-016 8, ADR-0006)
@@ -165,9 +170,11 @@ CREATE TABLE messages (
   CHECK (role = 'user' OR answer_status IS NOT NULL),
   CHECK (role = 'user' OR answer_status = 'completed' OR content IS NULL),   -- 미완성 답변 본문은 저장하지 않는다 (SFR-021 3)
   CHECK (role = 'assistant' OR answer_kind IS NULL),
+  CHECK ((role = 'assistant') = (question_id IS NOT NULL)),
   CHECK (answer_status IS DISTINCT FROM 'completed' OR answer_kind IS NOT NULL)
 );
 CREATE INDEX messages_page ON messages (conversation_id, id);
+CREATE INDEX messages_question ON messages (question_id) WHERE question_id IS NOT NULL;
 -- answer_status·reflect_status·learner_status는 qa_answer 작업의 단계 완료 표시다 (ADR-0022). 각 단계 결과와 같은 트랜잭션에서 쓰고,
 -- 재시도 때 이 값을 보고 남은 단계만 한다. 반영·관찰 단계는 answer_status = 'completed'이고 answer_kind = 'answer'일 때만 돈다.
 -- 확인 질문·상충 안내는 두 단계를 건너뛰고, 답변 저장 트랜잭션에서 learner_status = 'not_needed'로 쓴다.
@@ -200,6 +207,7 @@ CREATE TABLE block_revisions (                   -- 블록이 바뀔 때마다 �
   revision   int NOT NULL,
   content    jsonb,                              -- NULL이면 이 판에서 삭제됨
   author     text NOT NULL CHECK (author IN ('ai', 'user', 'qa')),
+  sources    jsonb NOT NULL DEFAULT '[]',        -- 그 판의 근거. 되돌리면 내용과 함께 돌아온다
   change_id  bigint REFERENCES note_changes ON DELETE SET NULL,   -- Q&A 반영·되돌리기로 바뀐 판
   reason     text,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -231,7 +239,7 @@ CREATE TABLE review_cards (                      -- 문제 하나와 그 FSRS �
   prompt         jsonb NOT NULL,
   answer         jsonb NOT NULL,
   rubric         jsonb NOT NULL,
-  sources        jsonb NOT NULL DEFAULT '[]',   -- 근거 블록. 블록이 바뀌면 paused (SFR-041)
+  sources        jsonb NOT NULL DEFAULT '[]',   -- 근거 블록 [{block_id, revision}]. 블록의 판 번호가 달라지면 paused (SFR-041)
   status         text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'retired')),
   fsrs_state     text NOT NULL DEFAULT 'new' CHECK (fsrs_state IN ('new', 'learning', 'review', 'relearning')),
   stability      double precision,
@@ -301,6 +309,7 @@ CREATE TABLE jobs (
   status      text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
   target_id   bigint,                           -- kind에 따라 강의·노트·메시지·답안 ID
   payload     jsonb NOT NULL DEFAULT '{}',      -- ID만. 질문 원문 금지 (SER-001)
+  user_started boolean NOT NULL DEFAULT false,  -- 사용자가 요청해 시작한 작업. 계정 동시 실행 한도는 이 작업만 센다 (PER-003 5, ADR-0022)
   attempt     int NOT NULL DEFAULT 0 CHECK (attempt BETWEEN 0 AND 4),
   error_code  text,
   run_after   timestamptz NOT NULL DEFAULT now(),
@@ -309,8 +318,12 @@ CREATE TABLE jobs (
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX jobs_user ON jobs (user_id, created_at);
--- shortcut: 여러 사용자를 훑는 회수 조회는 notree_app으로 못 한다(RLS), 회수 루프를 만들 때 SECURITY DEFINER 함수를 추가한다 (ADR-0010)
+-- 계정당 Q&A 1개 (PER-003 5). 'AI 작업 전체 2개'는 개수 검사라 enqueue가 users 행을 잠그고 user_started 작업을 센다
+CREATE UNIQUE INDEX jobs_one_qa ON jobs (user_id) WHERE kind = 'qa_answer' AND status IN ('queued', 'running');
+-- 여러 사용자를 훑는 회수 조회는 notree_app으로 못 한다(RLS). schema-mvp-security.sql의 SECURITY DEFINER 함수
+-- unsent_outbox·fail_stalled_jobs로 한다 (ADR-0010)
 CREATE INDEX jobs_ready ON jobs (run_after) WHERE status = 'queued';   -- FOR UPDATE SKIP LOCKED
+CREATE INDEX jobs_running ON jobs (started_at) WHERE status = 'running';   -- 회수 루프가 멈춘 작업을 찾는다 (fail_stalled_jobs)
 
 -- 작업 전달을 jobs와 같은 트랜잭션에 적어 둔다 (ADR-0019). 커밋 직후 보내고 sent_at을 채운다.
 -- 회수 루프가 sent_at IS NULL인 오래된 행을 다시 보낸다. 받는 쪽은 jobs.status = 'queued'로 중복을 거른다.
@@ -446,6 +459,7 @@ COMMENT ON COLUMN messages.id IS '메시지 ID';
 COMMENT ON COLUMN messages.user_id IS '사용자 ID';
 COMMENT ON COLUMN messages.conversation_id IS '대화 ID';
 COMMENT ON COLUMN messages.role IS '발화자';
+COMMENT ON COLUMN messages.question_id IS '질문 메시지 ID';
 COMMENT ON COLUMN messages.content IS '본문';
 COMMENT ON COLUMN messages.answer_status IS '답변 상태';
 COMMENT ON COLUMN messages.sources IS '근거';
@@ -477,6 +491,7 @@ COMMENT ON COLUMN block_revisions.block_id IS '블록 ID';
 COMMENT ON COLUMN block_revisions.revision IS '판 번호';
 COMMENT ON COLUMN block_revisions.content IS '내용';
 COMMENT ON COLUMN block_revisions.author IS '작성 주체';
+COMMENT ON COLUMN block_revisions.sources IS '근거';
 COMMENT ON COLUMN block_revisions.change_id IS '변경안 ID';
 COMMENT ON COLUMN block_revisions.reason IS '변경 이유';
 COMMENT ON COLUMN block_revisions.created_at IS '생성 시각';
@@ -544,6 +559,7 @@ COMMENT ON COLUMN jobs.kind IS '작업 종류';
 COMMENT ON COLUMN jobs.status IS '작업 상태';
 COMMENT ON COLUMN jobs.target_id IS '대상 ID';
 COMMENT ON COLUMN jobs.payload IS '작업 입력';
+COMMENT ON COLUMN jobs.user_started IS '사용자 시작 여부';
 COMMENT ON COLUMN jobs.attempt IS '시도 횟수';
 COMMENT ON COLUMN jobs.error_code IS '오류 코드';
 COMMENT ON COLUMN jobs.run_after IS '실행 가능 시각';

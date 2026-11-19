@@ -29,6 +29,7 @@ class Job(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=FetchedValue()
     )
+    user_started: Mapped[bool] = mapped_column(server_default=FetchedValue())
     attempt: Mapped[int] = mapped_column(server_default=FetchedValue())
     error_code: Mapped[str | None]
     run_after: Mapped[datetime] = mapped_column(server_default=FetchedValue())
