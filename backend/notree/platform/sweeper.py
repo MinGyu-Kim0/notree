@@ -12,13 +12,16 @@ from sqlalchemy import text
 from taskiq import TaskiqEvents, TaskiqState
 
 from notree.platform.db import engine, user_tx
-from notree.platform.jobs import Job, broker, run_failure_hook, send_outbox
+from notree.platform.jobs import broker, fail_job, send_outbox
 
 log = logging.getLogger(__name__)
 
 # 넷 다 초기값이다. 장애 시험(docs/testing/failure-matrix.md)을 돌려 보고 조정한다
 SWEEP_INTERVAL = timedelta(seconds=30)
 UNSENT_AFTER = timedelta(seconds=30)  # 커밋 직후의 전송이 끝날 시간을 준다
+RESEND_AFTER = timedelta(
+    minutes=5
+)  # 보냈는데도 이만큼 queued면 Redis에서 메시지를 잃은 것으로 본다
 STALLED_QA = timedelta(minutes=3)
 STALLED_BACKGROUND = timedelta(minutes=30)
 
@@ -29,8 +32,10 @@ async def sweep_once() -> None:
     async with engine.begin() as conn:
         unsent = (
             await conn.execute(
-                text("SELECT outbox_id, job_id, user_id FROM unsent_outbox(:older)"),
-                {"older": UNSENT_AFTER},
+                text(
+                    "SELECT outbox_id, job_id, user_id FROM unsent_outbox(:older, :resend)"
+                ),
+                {"older": UNSENT_AFTER, "resend": RESEND_AFTER},
             )
         ).all()
     for outbox_id, job_id, user_id in unsent:
@@ -39,15 +44,17 @@ async def sweep_once() -> None:
     async with engine.begin() as conn:
         stalled = (
             await conn.execute(
-                text("SELECT job_id, user_id FROM fail_stalled_jobs(:qa, :background)"),
+                text("SELECT job_id, user_id FROM stalled_jobs(:qa, :background)"),
                 {"qa": STALLED_QA, "background": STALLED_BACKGROUND},
             )
         ).all()
     for job_id, user_id in stalled:
-        async with user_tx(user_id) as db:
-            job = await db.get(Job, job_id)
-        if job is not None:  # 그사이 삭제된 작업
-            await run_failure_hook(job)
+        # 작업마다 따로 끝낸다. 한 작업의 훅이 실패해도 나머지는 끝내고, 실패한 작업은 다음 회수 때 다시 한다
+        try:
+            async with user_tx(user_id) as db:
+                await fail_job(db, job_id, "stalled")
+        except Exception as e:  # noqa: BLE001  훅의 예외 메시지에는 원문이 섞일 수 있어 ID와 예외 종류만 남긴다
+            log.error("stalled job %s not failed: %s", job_id, type(e).__name__)
 
 
 async def _sweep_forever() -> None:

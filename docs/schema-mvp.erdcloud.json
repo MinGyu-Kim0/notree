@@ -569,6 +569,19 @@
           "relType": null
         },
         {
+          "_id": "Wv86PPSjj7BpPF3mp",
+          "name": "마지막 생존 확인 시각",
+          "pName": "last_seen_at",
+          "domain": "",
+          "type": "timestamptz",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
           "_id": "pQaGY6JTLWj97pA6r",
           "name": "생성 시각",
           "pName": "created_at",
@@ -591,7 +604,7 @@
       "name": "전사 구간",
       "position": {
         "x": 770,
-        "y": 1346
+        "y": 1378
       },
       "keys": {
         "pks": [
@@ -800,6 +813,32 @@
           "relType": null
         },
         {
+          "_id": "jRwTStsFmFoo6iPtE",
+          "name": "발행 시각",
+          "pName": "published_at",
+          "domain": "",
+          "type": "timestamptz",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "Qgz7yYzEjHAwEJark",
+          "name": "과목 노트 반영 기준 시각",
+          "pName": "merged_at",
+          "domain": "",
+          "type": "timestamptz",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
           "_id": "JQ9Mv6aFeAvgqLYXh",
           "name": "삭제 시각",
           "pName": "deleted_at",
@@ -835,7 +874,7 @@
       "name": "노트 블록",
       "position": {
         "x": 1440,
-        "y": 526
+        "y": 590
       },
       "keys": {
         "pks": [
@@ -1022,7 +1061,7 @@
       "name": "과목 노트 업데이트",
       "position": {
         "x": 1440,
-        "y": 1112
+        "y": 1176
       },
       "keys": {
         "pks": [
@@ -1392,9 +1431,22 @@
           "relType": null
         },
         {
-          "_id": "bw7FvR3TqizRhdFqq",
-          "name": "잘림 여부",
-          "pName": "truncated",
+          "_id": "oga6iwbZMnduoXyeN",
+          "name": "맥락 잘림 여부",
+          "pName": "context_truncated",
+          "domain": "",
+          "type": "boolean",
+          "defaultValue": "false",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
+          "_id": "bqXEhb78pu3ao3F2a",
+          "name": "출력 잘림 여부",
+          "pName": "output_truncated",
           "domain": "",
           "type": "boolean",
           "defaultValue": "false",
@@ -1427,7 +1479,7 @@
       "name": "노트 변경안",
       "position": {
         "x": 2110,
-        "y": 1080
+        "y": 1112
       },
       "keys": {
         "pks": [
@@ -1579,6 +1631,19 @@
           "relType": null
         },
         {
+          "_id": "Wz58BWxd2wPFDsi9y",
+          "name": "보류 이유",
+          "pName": "held_reason",
+          "domain": "",
+          "type": "text",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
           "_id": "zwizD7TEFmhnowSNn",
           "name": "반영 시각",
           "pName": "applied_at",
@@ -1614,7 +1679,7 @@
       "name": "블록 이력",
       "position": {
         "x": 1440,
-        "y": 1506
+        "y": 1570
       },
       "keys": {
         "pks": [
@@ -2197,6 +2262,19 @@
           "relType": null
         },
         {
+          "_id": "Mjdy8NBJNsNsPhjvg",
+          "name": "정답 노출 여부",
+          "pName": "answer_revealed",
+          "domain": "",
+          "type": "boolean",
+          "defaultValue": "false",
+          "isAllowNull": false,
+          "comment": "",
+          "relEntity": null,
+          "relFieldId": null,
+          "relType": null
+        },
+        {
           "_id": "YedvGCaLRYxkTtdDG",
           "name": "자기 평가",
           "pName": "self_rating",
@@ -2310,7 +2388,7 @@
       "name": "관찰",
       "position": {
         "x": 2780,
-        "y": 1826
+        "y": 1858
       },
       "keys": {
         "pks": [
@@ -2776,6 +2854,19 @@
           "relType": "ZERO_OR_ONE_OR_MANY"
         },
         {
+          "_id": "maHvwbwFeZqcJAdST",
+          "name": "녹음 세션 ID",
+          "pName": "recording_id",
+          "domain": "",
+          "type": "bigint",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": "7ahNqWRAStPvGQs7C",
+          "relFieldId": "RLwKoyFhWnF3Yszhx",
+          "relType": "ZERO_OR_ONE_OR_MANY"
+        },
+        {
           "_id": "mPSkBtMJ7NBd6x4TY",
           "name": "제공사",
           "pName": "provider",
@@ -2861,7 +2952,7 @@
   "shapeData": [],
   "connectorData": [],
   "domainData": [],
-  "createdAt": "2026-11-19T02:30:07.014Z",
+  "createdAt": "2026-11-19T03:40:30.658Z",
   "creatorName": "",
   "creatorThumb": ""
 }

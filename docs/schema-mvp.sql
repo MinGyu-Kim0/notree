@@ -64,6 +64,7 @@ CREATE TABLE recordings (
   ended_at         timestamptz,
   audio_bytes      bigint NOT NULL DEFAULT 0,   -- 음성 파일은 S3. 계정 용량 계산용
   audio_expires_at timestamptz,                 -- 종료 + 7일
+  last_seen_at     timestamptz,                 -- realtime이 진행 중인 녹음마다 30초마다 갱신. 5분 넘게 멈추면 회수 루프가 녹음을 끝낸다 (DAR-001 4)
   created_at       timestamptz NOT NULL DEFAULT now(),
   CHECK ((ended_at IS NULL) = (audio_expires_at IS NULL))
 );
@@ -93,10 +94,13 @@ CREATE TABLE notes (
   course_id  bigint REFERENCES courses ON DELETE CASCADE,    -- 과목 노트는 과목당 1개 (notes_one_course)
   lecture_id bigint REFERENCES lectures ON DELETE CASCADE,   -- 강의 노트는 강의당 1개 (notes_one_lecture)
   status     text NOT NULL DEFAULT 'generating' CHECK (status IN ('generating', 'completed', 'partial', 'failed')),
+  published_at timestamptz,                    -- 강의 노트: 최종 노트를 마지막으로 발행한 시각. 녹음 세션마다 다시 발행한다 (SFR-007 6)
+  merged_at  timestamptz,                      -- 강의 노트: 과목 노트에 반영한 발행본의 published_at. 이보다 published_at이 늦으면 아직 반영하지 않은 강의다
   deleted_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK ((kind = 'course') = (course_id IS NOT NULL)),
-  CHECK ((kind = 'course') = (lecture_id IS NULL))
+  CHECK ((kind = 'course') = (lecture_id IS NULL)),
+  CHECK (kind = 'lecture' OR (published_at IS NULL AND merged_at IS NULL))
 );
 -- 휴지통에 있는 노트(deleted_at)는 자리를 차지하지 않는다. 노트만 지운 뒤 다시 생성해도 막히지 않는다.
 -- 살아 있는 노트가 이미 있으면 지운 노트의 복원은 이 인덱스에 걸린다. 복원 코드가 그 경우를 안내한다.
@@ -122,19 +126,21 @@ CREATE INDEX note_blocks_note ON note_blocks (note_id, position);
 
 -- 과목 노트 업데이트 한 번 (SFR-008). id가 LangGraph 체크포인트의 thread_id다 (ADR-0023).
 -- 체크포인트 테이블은 langgraph 스키마에 worker가 setup()으로 만든다. 업데이트가 끝나면(completed·cancelled) thread를 지운다.
+-- 실패한(failed) thread는 재시도에 쓰므로 남긴다.
 CREATE TABLE note_updates (
   id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id     bigint NOT NULL,
   note_id     bigint NOT NULL REFERENCES notes ON DELETE CASCADE,   -- 과목 노트
   status      text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'paused', 'awaiting_user',
                                                                'completed', 'failed', 'cancelled')),
-  lecture_ids bigint[] NOT NULL DEFAULT '{}',   -- 이 업데이트가 반영하는 강의. 시작할 때 아직 반영되지 않은 강의로 정한다
+  lecture_ids bigint[] NOT NULL DEFAULT '{}',   -- 이 업데이트가 반영하는 강의. 시작할 때 아직 반영되지 않은 강의(notes.merged_at)로 정한다
   created_at  timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz,
-  CHECK ((status IN ('completed', 'failed', 'cancelled')) = (finished_at IS NOT NULL))
+  -- failed는 끝이 아니라 '실패 후 재개 대기'다(SFR-008 비고). 재시도하면 같은 행·같은 thread로 이어 가고(SFR-043 2), 취소하면 cancelled
+  CHECK ((status IN ('completed', 'cancelled')) = (finished_at IS NOT NULL))
 );
--- 과목 노트당 진행 중 1, 대기 요청 1. 대기 요청이 이미 있으면 새 요청은 그 행에 합친다
-CREATE UNIQUE INDEX note_updates_one_open ON note_updates (note_id) WHERE status IN ('running', 'paused', 'awaiting_user');
+-- 과목 노트당 진행 중(실패 후 재개 대기 포함) 1, 대기 요청 1. 대기 요청이 이미 있으면 새 요청은 그 행에 합친다
+CREATE UNIQUE INDEX note_updates_one_open ON note_updates (note_id) WHERE status IN ('running', 'paused', 'awaiting_user', 'failed');
 CREATE UNIQUE INDEX note_updates_one_queued ON note_updates (note_id) WHERE status = 'queued';
 -- 반영 노드는 노트 변경과 status = 'completed'를 한 트랜잭션으로 커밋하고, 이미 completed면 건너뛴다 (이중 반영 방지)
 
@@ -164,7 +170,8 @@ CREATE TABLE messages (
   reflect_reason  text CHECK (char_length(reflect_reason) <= 300),   -- 반영 판단 이유, 2문장 이내 (SFR-017 3)
   learner_status  text CHECK (learner_status IN ('not_needed', 'applied', 'pending', 'held', 'failed')),   -- 학습 상태 갱신 결과 = 관찰 추가와 이해 상태 재계산 (SFR-021). held를 언제 쓰는지는 미정(learner 담당)
   answer_kind     text CHECK (answer_kind IN ('answer', 'clarification', 'conflict')),   -- 답변 종류: 답변 · 확인 질문 · 상충 안내
-  truncated       boolean NOT NULL DEFAULT false,   -- 맥락 자료나 출력을 잘랐음. 화면에 표시한다 (PER-004 4)
+  context_truncated boolean NOT NULL DEFAULT false,   -- 입력 맥락을 예산에 맞춰 잘랐음. 화면에 표시한다 (PER-004 4)
+  output_truncated  boolean NOT NULL DEFAULT false,   -- 출력이 토큰 한도에서 끊김. 관찰 단계를 건너뛰고 learner_status는 not_needed
   created_at      timestamptz NOT NULL DEFAULT now(),
   CHECK (role = 'assistant' OR (answer_status IS NULL AND content IS NOT NULL)),
   CHECK (role = 'user' OR answer_status IS NOT NULL),
@@ -193,10 +200,13 @@ CREATE TABLE note_changes (
   -- pending = 확인 필요, accepted = 사용자가 수락했고 재개 작업이 반영할 차례(과목 노트 업데이트의 의미 충돌만)
   status     text NOT NULL CHECK (status IN ('pending', 'accepted', 'applied', 'rejected', 'reverted', 'held')),
   reason     text CHECK (char_length(reason) <= 300),
+  -- 보류 이유. block_changed: 판단 뒤 대상 블록이 바뀜(화면에 [제안대로 반영]), block_deleted: 대상 블록이 지워짐, policy: SFR-020 정책에 따른 보류
+  held_reason text CHECK (held_reason IN ('block_changed', 'block_deleted', 'policy')),
   applied_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK ((status IN ('applied', 'reverted')) = (applied_at IS NOT NULL)),
-  CHECK (status <> 'accepted' OR note_update_id IS NOT NULL)
+  CHECK (status <> 'accepted' OR note_update_id IS NOT NULL),
+  CHECK ((status = 'held') = (held_reason IS NOT NULL))
 );
 CREATE INDEX note_changes_note ON note_changes (note_id, created_at);
 CREATE INDEX note_changes_message ON note_changes (message_id) WHERE message_id IS NOT NULL;
@@ -262,8 +272,9 @@ CREATE TABLE attempts (                          -- 제출 답안과 평가
   card_id         bigint NOT NULL REFERENCES review_cards ON DELETE CASCADE,
   answer          text,                         -- 플래시카드는 NULL
   hint_used       boolean NOT NULL DEFAULT false,
+  answer_revealed boolean NOT NULL DEFAULT false,   -- 제출 전에 정답을 봤음. 플래시카드의 회상 뒤 확인과 제출 뒤 피드백은 아니다 (SFR-035 4, SFR-052 6)
   self_rating     text CHECK (self_rating IN ('again', 'hard', 'good', 'easy')),
-  idempotency_key uuid NOT NULL UNIQUE,         -- 재전송 방지 (QUR-004)
+  idempotency_key uuid NOT NULL,                -- 재전송 방지 (QUR-004). 사용자 범위에서 유니크(attempts_idempotency)
   grade_status    text NOT NULL DEFAULT 'pending' CHECK (grade_status IN ('pending', 'completed', 'failed')),
   rating          text CHECK (rating IN ('again', 'hard', 'good', 'easy')),   -- FSRS에 반영한 등급
   feedback        jsonb,
@@ -273,6 +284,7 @@ CREATE TABLE attempts (                          -- 제출 답안과 평가
   CHECK ((grade_status = 'completed') = (rating IS NOT NULL AND graded_at IS NOT NULL))
 );
 CREATE INDEX attempts_card ON attempts (card_id, created_at);
+CREATE UNIQUE INDEX attempts_idempotency ON attempts (user_id, idempotency_key);
 
 CREATE TABLE observations (                      -- 이해 상태의 근거. 원문 없이 증거만, 바꾸지 않는다 (DAR-003)
   id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -322,12 +334,15 @@ CREATE TABLE jobs (
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX jobs_user ON jobs (user_id, created_at);
--- 계정당 Q&A 1개 (PER-003 5). 'AI 작업 전체 2개'는 개수 검사라 enqueue가 users 행을 잠그고 user_started 작업을 센다
+-- 계정당 Q&A 1개 (PER-003 5). 'AI 작업 전체 2개'는 개수 검사라 enqueue가 users 행을 잠그고 user_started 작업과 진행 중인 녹음을 센다
 CREATE UNIQUE INDEX jobs_one_qa ON jobs (user_id) WHERE kind = 'qa_answer' AND status IN ('queued', 'running');
+-- 강의당 실시간 요약 대기 1 (SFR-006 5). 등록하는 쪽은 유니크 위반이면 이미 대기 중인 요약이 있는 것이라 건너뛴다.
+-- 실행 1은 처리 함수가 지킨다: 같은 강의의 다른 요약이 running이면 아무것도 하지 않고 끝내고, 남은 전사는 다음 등록이 요약한다
+CREATE UNIQUE INDEX jobs_live_summary_queued ON jobs (target_id) WHERE kind = 'live_summary' AND status = 'queued';
 -- 여러 사용자를 훑는 회수 조회는 notree_app으로 못 한다(RLS). schema-mvp-security.sql의 SECURITY DEFINER 함수
--- unsent_outbox·fail_stalled_jobs로 한다 (ADR-0010)
+-- unsent_outbox·stalled_jobs로 한다 (ADR-0010)
 CREATE INDEX jobs_ready ON jobs (run_after) WHERE status = 'queued';   -- FOR UPDATE SKIP LOCKED
-CREATE INDEX jobs_running ON jobs (started_at) WHERE status = 'running';   -- 회수 루프가 멈춘 작업을 찾는다 (fail_stalled_jobs)
+CREATE INDEX jobs_running ON jobs (started_at) WHERE status = 'running';   -- 회수 루프가 멈춘 작업을 찾는다 (stalled_jobs)
 
 -- 작업 전달을 jobs와 같은 트랜잭션에 적어 둔다 (ADR-0019). 커밋 직후 보내고 sent_at을 채운다.
 -- 회수 루프가 sent_at IS NULL인 오래된 행을 다시 보낸다. 받는 쪽은 jobs.status = 'queued'로 중복을 거른다.
@@ -345,6 +360,7 @@ CREATE TABLE usage_ledger (                      -- AI 비용 예약과 정산 (
   id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id      bigint NOT NULL REFERENCES users ON DELETE CASCADE,
   job_id       bigint REFERENCES jobs ON DELETE SET NULL,
+  recording_id bigint REFERENCES recordings ON DELETE SET NULL,   -- STT 예약은 작업이 아니라 녹음 세션에 묶는다. 녹음이 끝나면(정상·비정상) 정산하거나 푼다
   provider     text NOT NULL CHECK (provider IN ('openai', 'soniox')),
   utc_date     date NOT NULL,
   reserved_usd numeric(10,6) NOT NULL CHECK (reserved_usd >= 0),
@@ -404,6 +420,7 @@ COMMENT ON COLUMN recordings.started_at IS '시작 시각';
 COMMENT ON COLUMN recordings.ended_at IS '종료 시각';
 COMMENT ON COLUMN recordings.audio_bytes IS '음성 용량(바이트)';
 COMMENT ON COLUMN recordings.audio_expires_at IS '음성 만료 시각';
+COMMENT ON COLUMN recordings.last_seen_at IS '마지막 생존 확인 시각';
 COMMENT ON COLUMN recordings.created_at IS '생성 시각';
 
 COMMENT ON TABLE segments IS '전사 구간';
@@ -423,6 +440,8 @@ COMMENT ON COLUMN notes.kind IS '노트 종류';
 COMMENT ON COLUMN notes.course_id IS '과목 ID';
 COMMENT ON COLUMN notes.lecture_id IS '강의 ID';
 COMMENT ON COLUMN notes.status IS '생성 상태';
+COMMENT ON COLUMN notes.published_at IS '발행 시각';
+COMMENT ON COLUMN notes.merged_at IS '과목 노트 반영 기준 시각';
 COMMENT ON COLUMN notes.deleted_at IS '삭제 시각';
 COMMENT ON COLUMN notes.created_at IS '생성 시각';
 
@@ -471,7 +490,8 @@ COMMENT ON COLUMN messages.reflect_status IS '노트 반영 결과';
 COMMENT ON COLUMN messages.reflect_reason IS '반영 판단 이유';
 COMMENT ON COLUMN messages.learner_status IS '학습 상태 갱신 결과';
 COMMENT ON COLUMN messages.answer_kind IS '답변 종류';
-COMMENT ON COLUMN messages.truncated IS '잘림 여부';
+COMMENT ON COLUMN messages.context_truncated IS '맥락 잘림 여부';
+COMMENT ON COLUMN messages.output_truncated IS '출력 잘림 여부';
 COMMENT ON COLUMN messages.created_at IS '생성 시각';
 
 COMMENT ON TABLE note_changes IS '노트 변경안';
@@ -486,6 +506,7 @@ COMMENT ON COLUMN note_changes.op IS '변경 종류';
 COMMENT ON COLUMN note_changes.proposal IS '변경 내용';
 COMMENT ON COLUMN note_changes.status IS '처리 상태';
 COMMENT ON COLUMN note_changes.reason IS '변경 이유';
+COMMENT ON COLUMN note_changes.held_reason IS '보류 이유';
 COMMENT ON COLUMN note_changes.applied_at IS '반영 시각';
 COMMENT ON COLUMN note_changes.created_at IS '생성 시각';
 
@@ -536,6 +557,7 @@ COMMENT ON COLUMN attempts.user_id IS '사용자 ID';
 COMMENT ON COLUMN attempts.card_id IS '복습 카드 ID';
 COMMENT ON COLUMN attempts.answer IS '답안';
 COMMENT ON COLUMN attempts.hint_used IS '힌트 사용 여부';
+COMMENT ON COLUMN attempts.answer_revealed IS '정답 노출 여부';
 COMMENT ON COLUMN attempts.self_rating IS '자기 평가';
 COMMENT ON COLUMN attempts.idempotency_key IS '재전송 방지 키';
 COMMENT ON COLUMN attempts.grade_status IS '평가 상태';
@@ -583,6 +605,7 @@ COMMENT ON TABLE usage_ledger IS '비용 장부';
 COMMENT ON COLUMN usage_ledger.id IS '장부 ID';
 COMMENT ON COLUMN usage_ledger.user_id IS '사용자 ID';
 COMMENT ON COLUMN usage_ledger.job_id IS '작업 ID';
+COMMENT ON COLUMN usage_ledger.recording_id IS '녹음 세션 ID';
 COMMENT ON COLUMN usage_ledger.provider IS '제공사';
 COMMENT ON COLUMN usage_ledger.utc_date IS '사용일(UTC)';
 COMMENT ON COLUMN usage_ledger.reserved_usd IS '예약 금액(USD)';

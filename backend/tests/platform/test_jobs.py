@@ -6,8 +6,10 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
+import notree.capture.db  # noqa: F401  녹음 수를 세는 함수를 계정 한도에 등록한다
 from notree.platform.db import user_tx
 from notree.platform.jobs import (
     ConcurrencyLimit,
@@ -147,6 +149,56 @@ async def test_user_started_limit(
         await enqueue(db, "grade", user_started=True)
 
 
+async def start_recording(user_id: int) -> None:
+    """진행 중인 녹음 하나를 만든다. 앞선 실행이 남긴 과목은 먼저 지운다(RLS가 이 사용자의 것만, 강의·녹음은 CASCADE)."""
+    async with user_tx(user_id) as db:
+        await db.execute(text("DELETE FROM courses"))
+        course_id = await db.scalar(
+            text("INSERT INTO courses (user_id, name) VALUES (:u, 'c') RETURNING id"),
+            {"u": user_id},
+        )
+        lecture_id = await db.scalar(
+            text(
+                "INSERT INTO lectures (user_id, course_id, title)"
+                " VALUES (:u, :c, 'l') RETURNING id"
+            ),
+            {"u": user_id, "c": course_id},
+        )
+        await db.execute(
+            text(
+                "INSERT INTO recordings (user_id, lecture_id, status, context, started_at)"
+                " VALUES (:u, :l, 'recording', '{}', now())"
+            ),
+            {"u": user_id, "l": lecture_id},
+        )
+
+
+async def test_active_recording_counts_toward_limit(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, other_id = users
+    fake_kiq(monkeypatch)
+    await start_recording(other_id)  # 다른 사용자의 녹음은 세지 않는다
+    async with user_tx(user_id) as db:
+        await db.execute(text("DELETE FROM courses"))
+        await enqueue(db, "grade", user_started=True)
+        await enqueue(db, "grade", user_started=True)
+        await db.execute(delete(Job))
+
+    await start_recording(user_id)
+    async with user_tx(user_id) as db:
+        await enqueue(db, "qa_answer", user_started=True)
+
+    # 녹음 1 + Q&A 1로 계정당 2개가 찼다 (PER-003 5)
+    with pytest.raises(ConcurrencyLimit):
+        async with user_tx(user_id) as db:
+            await enqueue(db, "grade", user_started=True)
+
+    for uid in users:
+        async with user_tx(uid) as db:
+            await db.execute(text("DELETE FROM courses"))
+
+
 async def test_concurrent_enqueues_stay_within_limit(
     users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -206,8 +258,10 @@ async def test_run_job_failure_calls_hook_and_releases_holds(
         raise ValueError
 
     @on_failure("grade")
-    async def mark_failed(job: Job) -> None:
-        failed.append((job.id, job.error_code))
+    async def mark_failed(db: AsyncSession, job: Job) -> None:
+        # 실패 처리와 같은 트랜잭션이라 방금 바뀐 상태가 보인다
+        status = await db.scalar(select(Job.status).where(Job.id == job.id))
+        failed.append((job.id, status))
 
     job = await add_job(user_id, "grade")
     async with user_tx(user_id) as db:
@@ -224,23 +278,64 @@ async def test_run_job_failure_calls_hook_and_releases_holds(
 
     done = await reload(job)
     assert (done.status, done.error_code) == ("failed", "ValueError")
-    assert failed == [(job.id, "ValueError")]
+    assert failed == [(job.id, "failed")]
     async with user_tx(user_id) as db:
         assert (await db.get_one(UsageLedger, hold.id)).status == "released"
 
 
-async def test_run_job_survives_failing_hook(users: tuple[int, int]) -> None:
+async def test_failing_hook_leaves_job_for_sweeper(users: tuple[int, int]) -> None:
     user_id, _ = users
 
-    @on_failure("generate_card")  # 처리 함수가 없는 종류
-    async def broken_hook(job: Job) -> None:
+    # 처리 함수가 없는 종류. 훅 등록은 전역이라 다른 테스트가 쓰지 않는 종류를 고른다
+    @on_failure("live_summary")
+    async def broken_hook(db: AsyncSession, job: Job) -> None:
         raise RuntimeError
 
-    job = await add_job(user_id, "generate_card")
+    job = await add_job(user_id, "live_summary")
+    await run_job(job.id, user_id)  # 예외를 올리지 않는다
+
+    # 실패 처리 전체가 롤백돼 running으로 남는다. 회수 루프가 다시 끝내며 훅을 다시 부른다
+    done = await reload(job)
+    assert (done.status, done.error_code) == ("running", None)
+
+
+async def test_late_failure_releases_its_holds(users: tuple[int, int]) -> None:
+    user_id, _ = users
+    hooked: list[int] = []
+
+    @handler("final_note")
+    async def late(job: Job) -> None:
+        async with user_tx(job.user_id) as db:  # 처리 도중 회수 루프가 실패로 끝냈다
+            await db.execute(
+                update(Job)
+                .where(Job.id == job.id)
+                .values(status="failed", error_code="stalled")
+            )
+            db.add(  # 그 뒤 늦게 깨어나 예약을 잡고 실패한다
+                UsageLedger(
+                    user_id=job.user_id,
+                    job_id=job.id,
+                    provider="openai",
+                    utc_date=datetime.now(UTC).date(),
+                    reserved_usd=Decimal("0.000001"),
+                )
+            )
+        raise ValueError
+
+    @on_failure("final_note")
+    async def hook(db: AsyncSession, job: Job) -> None:
+        hooked.append(job.id)
+
+    job = await add_job(user_id, "final_note")
     await run_job(job.id, user_id)
 
-    done = await reload(job)
-    assert (done.status, done.error_code) == ("failed", "no_handler")
+    async with user_tx(user_id) as db:
+        holds = await db.scalars(
+            select(UsageLedger.status).where(UsageLedger.job_id == job.id)
+        )
+        assert list(holds) == ["released"]
+    assert (await reload(job)).error_code == "stalled"
+    assert hooked == []  # 훅은 회수 루프가 이미 불렀다
 
 
 @pytest.mark.parametrize("saves_late", [False, True])
@@ -263,7 +358,7 @@ async def test_run_job_keeps_sweeper_failure(
                 pass
 
     @on_failure("purge")
-    async def hook(job: Job) -> None:
+    async def hook(db: AsyncSession, job: Job) -> None:
         hooked.append(job.id)
 
     job = await add_job(user_id, "purge")

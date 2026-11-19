@@ -41,7 +41,8 @@ REVOKE UPDATE ON block_revisions, observations FROM notree_app;
 
 -- LangGraph 체크포인트 (ADR-0023). worker가 시작할 때 setup()으로 이 스키마에 테이블을 만든다.
 -- 테이블에 user_id가 없어 RLS를 받지 않는다. 담기는 것은 노트·강의 내용이고 질문 원문은 아니다.
--- shortcut: api와 worker가 같은 notree_app 계정이라 DB 권한으로는 api의 접근을 막지 못한다, 계정을 나눌 때 notree_worker로 옮긴다
+-- shortcut: api와 worker가 같은 notree_app 계정이라 DB 권한으로는 api의 접근을 막지 못하고, setup()이 만든 테이블은
+--   notree_app이 소유한다('앱 계정은 소유자가 아니다'의 예외), 계정을 나눌 때 notree_worker로 옮기고 소유자를 notree_admin으로 바꾼다
 CREATE SCHEMA langgraph;
 GRANT USAGE, CREATE ON SCHEMA langgraph TO notree_app;
 GRANT USAGE ON SCHEMA langgraph TO notree_admin;
@@ -71,39 +72,32 @@ REVOKE EXECUTE ON FUNCTION login_user(text, text), global_spend(date) FROM PUBLI
 GRANT EXECUTE ON FUNCTION login_user(text, text), global_spend(date) TO notree_app;
 
 -- ─── 회수 루프: 여러 사용자의 행을 훑는 함수 (RLS 예외, ADR-0010) ───
--- 보내지 못한 작업 전달. 회수 루프가 다시 보낸다 (ADR-0019)
-CREATE FUNCTION unsent_outbox(p_older_than interval)
+-- 다시 보낼 작업 전달 (ADR-0019). 보내지 못한 행과, 보냈는데도 오래 queued인 행(Redis에서 메시지를 잃음)이다.
+-- 워커는 queued인 작업만 가져가므로 두 번 보내도 한 번만 돈다
+CREATE FUNCTION unsent_outbox(p_older_than interval, p_resend_after interval)
   RETURNS TABLE (outbox_id bigint, job_id bigint, user_id bigint)
   LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
 AS $$
   SELECT o.id, o.job_id, o.user_id
-  FROM outbox o
-  WHERE o.sent_at IS NULL AND o.created_at < now() - p_older_than
+  FROM outbox o JOIN jobs j ON j.id = o.job_id
+  WHERE (o.sent_at IS NULL AND o.created_at < now() - p_older_than)
+     OR (j.status = 'queued' AND o.sent_at < now() - p_resend_after)
   ORDER BY o.created_at
 $$;
 
--- running인 채 오래된 작업을 실패로 끝내고 비용 예약을 푼다. 인계가 없어서 그대로 두면 계정 한도와 예약을 계속 잡는다.
--- 끝낸 작업을 돌려주면 회수 루프가 작업마다 실패 훅을 부른다 (schema-mvp.md '작업 전달과 멈춘 작업')
-CREATE FUNCTION fail_stalled_jobs(p_qa interval, p_background interval)
+-- running인 채 오래된 작업. 회수 루프가 작업마다 user_tx에서 fail_job으로 끝낸다(실패 처리·예약 해제·실패 훅을 한 트랜잭션으로).
+-- 인계가 없어서 그대로 두면 계정 한도와 예약을 계속 잡는다 (schema-mvp.md '작업 전달과 멈춘 작업')
+CREATE FUNCTION stalled_jobs(p_qa interval, p_background interval)
   RETURNS TABLE (job_id bigint, user_id bigint)
-  LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public
+  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
 AS $$
-  WITH stalled AS (
-    UPDATE jobs j
-    SET status = 'failed', error_code = 'stalled', finished_at = now()
-    WHERE j.status = 'running'
-      AND j.started_at < now() - CASE WHEN j.kind = 'qa_answer' THEN p_qa ELSE p_background END
-    RETURNING j.id, j.user_id
-  ), released AS (
-    UPDATE usage_ledger u
-    SET status = 'released'
-    FROM stalled s
-    WHERE u.job_id = s.id AND u.user_id = s.user_id AND u.status = 'held'
-  )
-  SELECT s.id, s.user_id FROM stalled s
+  SELECT j.id, j.user_id
+  FROM jobs j
+  WHERE j.status = 'running'
+    AND j.started_at < now() - CASE WHEN j.kind = 'qa_answer' THEN p_qa ELSE p_background END
 $$;
 
-ALTER FUNCTION unsent_outbox(interval) OWNER TO notree_admin;
-ALTER FUNCTION fail_stalled_jobs(interval, interval) OWNER TO notree_admin;
-REVOKE EXECUTE ON FUNCTION unsent_outbox(interval), fail_stalled_jobs(interval, interval) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION unsent_outbox(interval), fail_stalled_jobs(interval, interval) TO notree_app;
+ALTER FUNCTION unsent_outbox(interval, interval) OWNER TO notree_admin;
+ALTER FUNCTION stalled_jobs(interval, interval) OWNER TO notree_admin;
+REVOKE EXECUTE ON FUNCTION unsent_outbox(interval, interval), stalled_jobs(interval, interval) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION unsent_outbox(interval, interval), stalled_jobs(interval, interval) TO notree_app;

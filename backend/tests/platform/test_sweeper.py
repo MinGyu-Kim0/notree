@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from notree.platform.db import user_tx
 from notree.platform.jobs import Job, Outbox, on_failure
@@ -56,11 +57,36 @@ async def test_resends_old_unsent_outbox(user_id: int) -> None:
     assert sent.sent_at == old
 
 
+async def test_resends_sent_but_still_queued(user_id: int) -> None:
+    now = datetime.now(UTC)
+    long_ago = now - timedelta(minutes=10)
+    async with user_tx(user_id) as db:
+        lost = Job(user_id=user_id, kind="purge")  # 보냈는데 Redis에서 메시지를 잃었다
+        taken = Job(user_id=user_id, kind="purge", status="running")
+        db.add_all([lost, taken])
+        await db.flush()
+        lost_out = Outbox(
+            user_id=user_id, job_id=lost.id, created_at=long_ago, sent_at=long_ago
+        )
+        taken_out = Outbox(
+            user_id=user_id, job_id=taken.id, created_at=long_ago, sent_at=long_ago
+        )
+        db.add_all([lost_out, taken_out])
+
+    await sweep_once()
+
+    async with user_tx(user_id) as db:
+        lost_out = await db.get_one(Outbox, lost_out.id)
+        taken_out = await db.get_one(Outbox, taken_out.id)
+    assert lost_out.sent_at is not None and lost_out.sent_at >= now
+    assert taken_out.sent_at == long_ago  # 워커가 가져간 작업은 다시 보내지 않는다
+
+
 async def test_fails_stalled_jobs(user_id: int) -> None:
     hooked: list[int] = []
 
     @on_failure("qa_answer")
-    async def mark_failed(job: Job) -> None:
+    async def mark_failed(db: AsyncSession, job: Job) -> None:
         hooked.append(job.id)
 
     started = datetime.now(UTC) - timedelta(
