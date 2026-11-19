@@ -170,7 +170,8 @@ CREATE TABLE messages (
 CREATE INDEX messages_page ON messages (conversation_id, id);
 -- answer_status·reflect_status·learner_status는 qa_answer 작업의 단계 완료 표시다 (ADR-0022). 각 단계 결과와 같은 트랜잭션에서 쓰고,
 -- 재시도 때 이 값을 보고 남은 단계만 한다. 반영·관찰 단계는 answer_status = 'completed'이고 answer_kind = 'answer'일 때만 돈다.
--- 확인 질문·상충 안내는 답변 저장 트랜잭션에서 reflect_status·learner_status를 'not_needed'로 쓴다.
+-- 확인 질문·상충 안내는 두 단계를 건너뛰고, 답변 저장 트랜잭션에서 learner_status = 'not_needed'로 쓴다.
+-- reflect_status는 확인 질문이면 'not_needed', 상충 안내면 'held'와 reflect_reason(무엇이 상충하는지)이다 (근거 충돌은 보류, SFR-017 4).
 
 CREATE TABLE note_changes (
   id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
