@@ -45,7 +45,7 @@ flowchart TB
     K[worker<br/>Taskiq · LangGraph]
     C[cron]
     P[(postgres<br/>pg_bigm · pgvector · WAL-G)]
-    RD[(redis<br/>Streams · AOF)]
+    RD[(redis<br/>Streams · 비영속)]
   end
   S3[(S3)]
   B --> W
@@ -159,7 +159,7 @@ sequenceDiagram
 - **재연결** (QUR-003, SIR-001): 브라우저↔`realtime` 연결이나 `realtime`↔Soniox 연결이 끊기면 1·2·4초 간격으로 3회 다시 연결한다. 그동안 음성은 버퍼에 보존한다. 모두 실패하면 시스템 중지 또는 부분 완료로 끝내고, 복구 업로드를 제공한다.
 - **비용 예약 연장**: 30분 단위로 연장한다. 연장할 수 없으면 경고한 뒤 예약 시간에 정상 종료한다(PER-003 3).
 - **세션 종료**: 사용자 종료, 연결 끊김 5분, 180분 상한 중 먼저 오는 시각이다. 이 시각부터 음성 만료 7일을 센다(DAR-001 4).
-- **실시간 요약 개수** (SFR-006 5): 강의당 대기 1개는 `jobs_live_summary_queued`가 막는다. 실행 1개는 처리 함수가 지킨다. 같은 강의의 다른 요약이 실행 중이면 아무것도 하지 않고 끝내고, 실제로 요약한 작업이 끝날 때 아직 요약하지 않은 확정 전사(Redis에 둔 '마지막으로 요약한 구간' 이후)가 남아 있으면 하나를 더 등록한다. 이 등록과 자기 작업의 종료(`complete_job`)는 한 트랜잭션에서 커밋한다. 후속 작업이 앞 작업을 `running`으로 보고 건너뛰지 않게 하기 위해서다. 녹음이 끝나 새 전사가 오지 않아도 남은 구간이 요약된다.
+- **실시간 요약 개수** (SFR-006 5): 강의당 대기 1개는 `jobs_live_summary_queued`가 막는다. 실행 1개는 처리 함수가 지킨다. 같은 강의에 자기보다 작업 id가 작은 요약이 실행 중이면 아무것도 하지 않고 끝낸다. 둘이 동시에 시작해도 id가 작은 쪽은 반드시 실행한다. 실제로 요약한 작업이 끝날 때 아직 요약하지 않은 확정 전사(Redis에 둔 '마지막으로 요약한 구간' 이후)가 남아 있으면 하나를 더 등록한다. 이 등록과 자기 작업의 종료(`complete_job`)는 한 트랜잭션에서 커밋한다. 후속 작업이 앞 작업을 `running`으로 보고 건너뛰지 않게 하기 위해서다. 녹음이 끝나 새 전사가 오지 않아도 남은 구간이 요약된다. 녹음 종료 경로(realtime)도 남은 구간을 위해 `live_summary`를 직접 등록한다(SFR-006 4). 앞 작업이 없는 짧은 녹음도 요약된다.
 
 ### F2. 녹음 중 용어 적용 (STT 세션 교체)
 
@@ -244,8 +244,8 @@ sequenceDiagram
   K->>CL: 노드마다 OpenAI SDK 호출(답변 노드는 스트리밍, 웹 검색 도구 허용, 응답의 인용 목록 보관)
   loop 답변 토큰
     CL-->>K: 토큰
-    K->>RD: PUBLISH tokens:{user}(작업 ID, 토큰. 디스크에 남지 않는다, SER-001 4)
-    RD-->>A: 토큰
+    K->>RD: XADD events:{user}(작업 ID, 토큰. Redis는 디스크에 쓰지 않는다, SER-001 4)
+    RD-->>A: 이벤트
     A-->>B: SSE
   end
   K->>P: 답변 저장 + answer_status + 이벤트 outbox(근거가 바뀌었으면 '근거 변경됨'으로 저장하고 여기서 끝)
@@ -365,7 +365,7 @@ sequenceDiagram
 | 실행 권한 | Redis lease(`NX`, TTL 30초, heartbeat 10초)를 먼저 잡고 DB `jobs.attempt_no`를 올린다. 모든 결과 반영 트랜잭션은 `attempt_no`를 확인한다. Redis가 잃는 것은 중복 호출 비용일 뿐이다. | [ADR-0018](adr/0018-db-fencing-redis-lease.md) |
 | 작업 재개 | Q&A는 단계 결과와 완료 표시(`messages.answer_status`·`reflect_status`·`learner_status`)를 한 트랜잭션으로 커밋하고, 재시도 때 남은 단계부터 한다. 과목 노트 업데이트는 Postgres 체크포인터로 마지막 노드부터 이어 가고, 반영 노드가 `note_updates.status`로 이중 반영을 막는다. 결과 반영 트랜잭션은 `attempt_no`를 확인한다. | [ADR-0022](adr/0022-qa-followup-stages-in-one-job.md), [ADR-0023](adr/0023-course-update-checkpointer-and-interrupt.md), SFR-043 |
 | 재시도 | OpenAI SDK `max_retries`(초기값 배경 작업 2, `qa_answer` 작업의 모든 단계 1. 외부 호출 하나당 최대 4회 안, 재시도할 수 없는 오류는 바로 실패). Taskiq 재시도는 쓰지 않는다. 워커 장애 인계는 `attempt_no`가 3을 넘으면 실패로 끝낸다. 호출마다 작업 마감까지 남은 시간 안에서 timeout을 둔다. | [ADR-0017](adr/0017-taskiq-delivery-sdk-retries.md), QUR-004, SIR-002 |
-| 이벤트 | 진행은 사용자별 Redis Stream에 쌓고 SSE로 보낸다. `Last-Event-ID`로 재개한다. 답변 토큰은 Stream(AOF로 디스크에 남음)이 아니라 pub/sub으로 보내고, 재접속하면 완료된 답변을 DB에서 읽는다(SER-001 4, SFR-021 4). 완료·실패·취소는 outbox를 거친다. 이벤트에 작업 ID와 실행 시도 번호를 붙인다. | [ADR-0005](adr/0005-sse-for-events-websocket-for-recording.md) |
+| 이벤트 | 진행은 사용자별 Redis Stream에 쌓고 SSE로 보낸다. `Last-Event-ID`로 재개한다. 답변 토큰도 같은 Stream에 싣는다. Redis는 스냅샷·AOF 없이 돌려 토큰이 디스크에 남지 않고(SER-001 4), 재시작으로 이벤트를 잃으면 화면이 완료된 답변을 DB에서 읽는다(SFR-021 4). 완료·실패·취소는 outbox를 거친다. 이벤트에 작업 ID와 실행 시도 번호를 붙인다. | [ADR-0005](adr/0005-sse-for-events-websocket-for-recording.md) |
 | 비용 예약 | Postgres 예약 장부에 호출 전 예약하고 호출 뒤 정산한다. 작업 등록과 같은 트랜잭션에서 한다. 사용자 하루 1달러, 전체 하루 10달러(UTC). 작업을 끝내는 모든 경로(성공·실패·취소·인계 상한 초과)는 같은 트랜잭션에서 그 작업의 남은 예약을 정산하거나 `released`로 바꾼다. 예약은 날짜가 바뀌어도 한도에 남기 때문이다(PER-003 2). | PER-003 |
 | 삭제 묶음 | 한 번의 삭제에 묶음 ID를 붙인다. 복원은 묶음 단위다. 기한이 여럿이면 가장 이른 기한에 삭제한다. | SFR-013·048, DAR-006 |
 | 삭제 기록 | S3 추가 전용 버킷에 쓴다. 복원할 때 다시 적용한다. | [ADR-0008](adr/0008-deletion-records-outside-db.md) |
