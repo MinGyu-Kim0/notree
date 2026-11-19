@@ -117,6 +117,7 @@ async def enqueue(
     target_id: int | None = None,
     *,
     user_started: bool = False,
+    _retry: bool = True,
 ) -> Job:
     """작업 행과 전달 기록(outbox)을 넣고, 이 트랜잭션이 커밋되면 워커를 깨운다.
 
@@ -154,9 +155,15 @@ async def enqueue(
                 Job.kind == kind, Job.target_id == target_id, Job.status == "queued"
             )
         )
-        if queued is None:  # 그사이 워커가 가져가 대기 자리가 비었다. 다시 넣는다
-            return await enqueue(db, kind, target_id, user_started=user_started)
-        return queued
+        if queued is not None:
+            return queued
+        # 그사이 워커가 가져가 대기 자리가 비었으면 한 번만 다시 넣는다.
+        # 다시 걸리면 RLS에 가려 보이지 않는 행(남의 대상 ID)이라 그대로 올린다
+        if not _retry:
+            raise
+        return await enqueue(
+            db, kind, target_id, user_started=user_started, _retry=False
+        )
     outbox = Outbox(user_id=user_id, job_id=job.id)
     db.add(outbox)
     await db.flush()

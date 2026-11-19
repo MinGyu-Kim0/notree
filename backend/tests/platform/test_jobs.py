@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import delete, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import notree.capture.db  # noqa: F401  녹음 수를 세는 함수를 계정 한도에 등록한다
@@ -360,6 +361,26 @@ async def test_follow_up_already_queued_keeps_save(
     assert follow_ups == [waiting.id]
     assert outboxes == [waiting.id]  # 새 작업이 없으니 outbox도 하나다
     assert sent == [(waiting.id, user_id)]
+
+
+async def test_follow_up_dedupe_sees_only_own_jobs(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, other_id = users
+    sent = fake_kiq(monkeypatch)
+    async with user_tx(other_id) as db:
+        theirs = await enqueue(db, "live_summary", target_id=8)
+    async with user_tx(user_id) as db:
+        mine = await enqueue(db, "live_summary", target_id=7)
+        again = await enqueue(db, "live_summary", target_id=7)
+    assert again.id == mine.id != theirs.id
+    # 남의 대기 작업과 같은 대상 ID: RLS에 가려 돌려줄 작업이 없으니 끝없이 다시 시도하지 않고 오류를 올린다
+    with pytest.raises(IntegrityError):
+        async with user_tx(user_id) as db:
+            await enqueue(db, "live_summary", target_id=8)
+    async with user_tx(user_id) as db:
+        assert list(await db.scalars(select(Outbox.job_id))) == [mine.id]
+    assert (mine.id, user_id) in sent and len(sent) == 2
 
 
 async def test_complete_job_rolls_back_with_failed_save(
