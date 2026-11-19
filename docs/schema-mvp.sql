@@ -338,7 +338,8 @@ CREATE INDEX jobs_user ON jobs (user_id, created_at);
 CREATE UNIQUE INDEX jobs_one_qa ON jobs (user_id) WHERE kind = 'qa_answer' AND status IN ('queued', 'running');
 -- 강의당 실시간 요약 대기 1 (SFR-006 5). 등록하는 쪽은 유니크 위반이면 이미 대기 중인 요약이 있는 것이라 건너뛴다.
 -- 실행 1은 처리 함수가 지킨다: 같은 강의의 다른 요약이 running이면 아무것도 하지 않고 끝낸다.
--- 실제로 요약한 작업은 끝날 때 아직 요약하지 않은 확정 전사가 남아 있으면 하나를 더 등록한다(녹음 종료 뒤 남은 구간)
+-- 실제로 요약한 작업은 끝날 때 아직 요약하지 않은 확정 전사가 남아 있으면 하나를 더 등록한다(녹음 종료 뒤 남은 구간).
+-- 이 등록은 자기 작업의 종료(complete_job)와 한 트랜잭션이라, 후속 작업이 앞 작업을 running으로 보지 않는다
 CREATE UNIQUE INDEX jobs_live_summary_queued ON jobs (target_id) WHERE kind = 'live_summary' AND status = 'queued';
 -- 과목 노트 업데이트 하나(target_id = note_updates.id)에 대기 중인 작업은 1개. 결정 재전송·재시도 연타가 재개를 두 번 넣지 않는다.
 -- api는 유니크 위반을 '이미 요청됨'으로 보고 성공으로 응답한다. running은 막지 않는다: awaiting_user를 커밋한 직후

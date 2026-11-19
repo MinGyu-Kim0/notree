@@ -16,6 +16,7 @@ from notree.platform.jobs import (
     Job,
     JobNotRunning,
     Outbox,
+    complete_job,
     enqueue,
     handler,
     job_tx,
@@ -297,6 +298,38 @@ async def test_failing_hook_leaves_job_for_sweeper(users: tuple[int, int]) -> No
     # 실패 처리 전체가 롤백돼 running으로 남는다. 회수 루프가 다시 끝내며 훅을 다시 부른다
     done = await reload(job)
     assert (done.status, done.error_code) == ("running", None)
+
+
+async def test_complete_job_commits_with_follow_up(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, _ = users
+    sent = fake_kiq(monkeypatch)
+    seen: list[int] = []
+
+    @handler("purge")
+    async def summarize(job: Job) -> None:
+        async with job_tx(job) as db:
+            await complete_job(db, job)
+            await enqueue(db, "purge", target_id=job.target_id)  # 후속 작업
+        # 처리 함수가 반환하기 전에 후속 작업이 시작해도 앞 작업은 이미 끝나 있다
+        async with user_tx(job.user_id) as db:
+            seen.extend(
+                await db.scalars(
+                    select(Job.id).where(
+                        Job.target_id == job.target_id, Job.status == "running"
+                    )
+                )
+            )
+
+    async with user_tx(user_id) as db:
+        job = Job(user_id=user_id, kind="purge", target_id=7)
+        db.add(job)
+    await run_job(job.id, user_id)
+
+    assert seen == []
+    assert (await reload(job)).status == "succeeded"  # run_job이 덮어쓰지 않는다
+    assert len(sent) == 1
 
 
 async def test_late_failure_releases_its_holds(users: tuple[int, int]) -> None:

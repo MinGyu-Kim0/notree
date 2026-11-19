@@ -197,6 +197,20 @@ async def job_tx(job: Job) -> AsyncIterator[AsyncSession]:
         yield db
 
 
+async def complete_job(db: AsyncSession, job: Job) -> None:
+    """job_tx 안에서 작업을 성공으로 끝내고 예약을 푼다. 마지막 저장과 작업 종료를 한 번에 커밋할 때 쓴다.
+
+    처리 함수가 반환된 뒤 run_job이 따로 끝내면, 그 사이 같은 대상의 다음 작업이 이 작업을 아직 running으로 본다.
+    후속 작업 등록(enqueue)이나 다음 단계를 여는 상태 변경과 함께 부른다. 이 뒤에는 job_tx를 다시 열 수 없다.
+    """
+    await db.execute(
+        update(Job)
+        .where(Job.id == job.id, Job.status == "running")
+        .values(status="succeeded", finished_at=func.now())
+    )
+    await usage.release_job(db, job.id)
+
+
 async def fail_job(db: AsyncSession, job_id: int, error_code: str) -> Job | None:
     """running인 작업을 실패로 끝내고, 예약을 풀고, 실패 훅을 같은 트랜잭션에서 부른다.
 
