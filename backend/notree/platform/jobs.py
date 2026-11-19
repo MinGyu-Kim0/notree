@@ -9,7 +9,6 @@ from typing import Any
 
 from sqlalchemy import FetchedValue, func, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 from taskiq_redis import RedisStreamBroker
@@ -21,10 +20,8 @@ log = logging.getLogger(__name__)
 broker = RedisStreamBroker(os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
 
 MAX_USER_STARTED = 2  # 계정당 사용자가 시작한 작업의 동시 실행 수 (PER-003 5, ADR-0022)
-# 같은 대상에 대기 작업을 하나만 두는 인덱스(schema-mvp.sql). 걸리면 새로 넣지 않고 대기 중인 작업을 돌려준다
-_DEDUPE_INDEXES = frozenset(
-    {"jobs_live_summary_queued", "jobs_one_course_update", "jobs_generate_card_queued"}
-)
+# 같은 대상에 대기 작업을 하나만 두는 종류(schema-mvp.sql의 부분 유니크 인덱스). 대기 작업이 있으면 그것을 돌려준다
+_ONE_QUEUED_KINDS = frozenset({"live_summary", "course_update", "generate_card"})
 
 
 class ConcurrencyLimit(Exception):
@@ -117,13 +114,12 @@ async def enqueue(
     target_id: int | None = None,
     *,
     user_started: bool = False,
-    _retry: bool = True,
 ) -> Job:
     """작업 행과 전달 기록(outbox)을 넣고, 이 트랜잭션이 커밋되면 워커를 깨운다.
 
     사용자가 요청해 시작하는 작업은 user_started를 켠다. 계정 동시 실행 한도를 넘으면 ConcurrencyLimit이다.
-    같은 대상의 대기 작업이 이미 있으면(_DEDUPE_INDEXES) 새로 넣지 않고 그 작업을 돌려준다. 저장점까지만 되돌리므로
-    부른 쪽 트랜잭션의 다른 쓰기(도메인 저장, complete_job)는 그대로 커밋된다.
+    같은 대상에 대기 작업을 하나만 두는 종류는, 대기 작업이 이미 있으면 새로 넣지 않고 그 행을 잠가 돌려준다.
+    잠금은 부른 쪽이 커밋할 때까지 남아, 워커가 그 작업을 가져가 커밋 전 입력을 읽는 일을 막는다.
     """
     user_id: int = db.info["user_id"]
     if user_started:
@@ -140,30 +136,22 @@ async def enqueue(
     job = Job(
         user_id=user_id, kind=kind, target_id=target_id, user_started=user_started
     )
-    try:
-        # 유니크 위반은 트랜잭션 전체를 실패시키므로 저장점 안에서 넣는다
-        async with db.begin_nested():
-            db.add(job)
-            await db.flush()
-    except IntegrityError as e:
-        # Any: psycopg 예외의 diag 속성은 SQLAlchemy 타입에 없다
-        diag: Any = getattr(e.orig, "diag", None)
-        if getattr(diag, "constraint_name", None) not in _DEDUPE_INDEXES:
-            raise
+    if kind in _ONE_QUEUED_KINDS:
+        # 같은 대상을 등록하는 요청끼리 줄 세운다. 워커는 대기 작업을 빼기만 하고 넣지 않으므로,
+        # 줄을 선 뒤 대기 작업이 없으면 넣어도 유니크 인덱스에 걸리지 않는다(걸리면 RLS에 가린 남의 대상 ID라 오류다)
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"enqueue:{kind}:{target_id}"},
+        )
         queued = await db.scalar(
-            select(Job).where(
-                Job.kind == kind, Job.target_id == target_id, Job.status == "queued"
-            )
+            select(Job)
+            .where(Job.kind == kind, Job.target_id == target_id, Job.status == "queued")
+            .with_for_update()
         )
         if queued is not None:
             return queued
-        # 그사이 워커가 가져가 대기 자리가 비었으면 한 번만 다시 넣는다.
-        # 다시 걸리면 RLS에 가려 보이지 않는 행(남의 대상 ID)이라 그대로 올린다
-        if not _retry:
-            raise
-        return await enqueue(
-            db, kind, target_id, user_started=user_started, _retry=False
-        )
+    db.add(job)
+    await db.flush()
     outbox = Outbox(user_id=user_id, job_id=job.id)
     db.add(outbox)
     await db.flush()

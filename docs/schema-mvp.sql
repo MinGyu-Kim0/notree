@@ -96,11 +96,12 @@ CREATE TABLE notes (
   status     text NOT NULL DEFAULT 'generating' CHECK (status IN ('generating', 'completed', 'partial', 'failed')),
   published_at timestamptz,                    -- 강의 노트: 최종 노트를 마지막으로 발행한 시각. 녹음 세션마다 다시 발행한다 (SFR-007 6)
   merged_at  timestamptz,                      -- 강의 노트: 과목 노트에 반영한 발행본의 published_at. 이보다 published_at이 늦으면 아직 반영하지 않은 강의다
+  published_recording_id bigint REFERENCES recordings ON DELETE SET NULL,   -- 강의 노트: 발행본에 든 마지막 녹음 세션. 이보다 앞선 입력의 늦은 결과는 발행하지 않는다
   deleted_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK ((kind = 'course') = (course_id IS NOT NULL)),
   CHECK ((kind = 'course') = (lecture_id IS NULL)),
-  CHECK (kind = 'lecture' OR (published_at IS NULL AND merged_at IS NULL)),
+  CHECK (kind = 'lecture' OR (published_at IS NULL AND merged_at IS NULL AND published_recording_id IS NULL)),
   CHECK (kind = 'course' OR status NOT IN ('completed', 'partial') OR published_at IS NOT NULL)   -- 완료된 강의 노트는 발행 시각이 있다
 );
 -- 휴지통에 있는 노트(deleted_at)는 자리를 차지하지 않는다. 노트만 지운 뒤 다시 생성해도 막히지 않는다.
@@ -452,6 +453,7 @@ COMMENT ON COLUMN notes.lecture_id IS '강의 ID';
 COMMENT ON COLUMN notes.status IS '생성 상태';
 COMMENT ON COLUMN notes.published_at IS '발행 시각';
 COMMENT ON COLUMN notes.merged_at IS '과목 노트 반영 기준 시각';
+COMMENT ON COLUMN notes.published_recording_id IS '발행본의 마지막 녹음 세션 ID';
 COMMENT ON COLUMN notes.deleted_at IS '삭제 시각';
 COMMENT ON COLUMN notes.created_at IS '생성 시각';
 

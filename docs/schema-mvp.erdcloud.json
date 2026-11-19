@@ -839,6 +839,19 @@
           "relType": null
         },
         {
+          "_id": "uBHcorXCBqmSrn47G",
+          "name": "발행본의 마지막 녹음 세션 ID",
+          "pName": "published_recording_id",
+          "domain": "",
+          "type": "bigint",
+          "defaultValue": "",
+          "isAllowNull": true,
+          "comment": "",
+          "relEntity": "7ahNqWRAStPvGQs7C",
+          "relFieldId": "RLwKoyFhWnF3Yszhx",
+          "relType": "ZERO_OR_ONE_OR_MANY"
+        },
+        {
           "_id": "JQ9Mv6aFeAvgqLYXh",
           "name": "삭제 시각",
           "pName": "deleted_at",
@@ -874,7 +887,7 @@
       "name": "노트 블록",
       "position": {
         "x": 1440,
-        "y": 590
+        "y": 622
       },
       "keys": {
         "pks": [
@@ -1061,7 +1074,7 @@
       "name": "과목 노트 업데이트",
       "position": {
         "x": 1440,
-        "y": 1176
+        "y": 1208
       },
       "keys": {
         "pks": [
@@ -1679,7 +1692,7 @@
       "name": "블록 이력",
       "position": {
         "x": 1440,
-        "y": 1570
+        "y": 1602
       },
       "keys": {
         "pks": [
@@ -2952,7 +2965,7 @@
   "shapeData": [],
   "connectorData": [],
   "domainData": [],
-  "createdAt": "2026-11-19T03:40:30.658Z",
+  "createdAt": "2026-11-19T06:15:10.094Z",
   "creatorName": "",
   "creatorThumb": ""
 }

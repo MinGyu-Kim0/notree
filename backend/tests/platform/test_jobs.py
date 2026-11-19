@@ -383,6 +383,50 @@ async def test_follow_up_dedupe_sees_only_own_jobs(
     assert (mine.id, user_id) in sent and len(sent) == 2
 
 
+async def claim(job: Job) -> bool:
+    """워커가 작업을 가져가는 갱신(run_job과 같은 조건). 가져갔으면 True."""
+    async with user_tx(job.user_id) as db:
+        claimed = await db.scalar(
+            update(Job)
+            .where(Job.id == job.id, Job.status == "queued")
+            .values(status="running")
+            .returning(Job.id)
+        )
+    return claimed is not None
+
+
+async def test_returned_waiting_job_is_held_until_commit(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, _ = users
+    fake_kiq(monkeypatch)
+    async with user_tx(user_id) as db:
+        waiting = await enqueue(db, "generate_card", target_id=7)
+
+    async with user_tx(user_id) as db:
+        assert (await enqueue(db, "generate_card", target_id=7)).id == waiting.id
+        # 새 입력을 저장한 트랜잭션이 커밋하기 전에는 워커가 그 작업을 가져가지 못한다
+        worker = asyncio.create_task(claim(waiting))
+        await asyncio.sleep(0.3)
+        assert not worker.done()
+    assert await worker  # 커밋 뒤에 가져가 새 입력을 읽는다
+
+
+async def test_new_waiting_job_when_worker_took_the_old_one(
+    users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, _ = users
+    fake_kiq(monkeypatch)
+    async with user_tx(user_id) as db:
+        taken = await enqueue(db, "generate_card", target_id=7)
+    assert await claim(taken)  # 워커가 먼저 가져갔다
+
+    async with user_tx(user_id) as db:
+        fresh = await enqueue(db, "generate_card", target_id=7)
+    assert fresh.id != taken.id  # 새 입력은 새 대기 작업이 처리한다
+    assert (await reload(fresh)).status == "queued"
+
+
 async def test_complete_job_rolls_back_with_failed_save(
     users: tuple[int, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
